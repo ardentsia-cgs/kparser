@@ -1,3 +1,8 @@
+/* strdup is POSIX, not ISO C; request it explicitly so a strict
+ * -std=c99/-std=c11 build on glibc still declares it. Must precede any
+ * system header include. */
+#define _POSIX_C_SOURCE 200809L
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
