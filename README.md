@@ -1,7 +1,7 @@
 # kparser
 
 [![CI](https://github.com/ardentsia-cgs/kparser/actions/workflows/ci.yml/badge.svg)](https://github.com/ardentsia-cgs/kparser/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/ardentsia-cgs/kparser/branch/main/graph/badge.svg)](https://codecov.io/gh/ardentsia-cgs/kparser)
+[![codecov](https://codecov.io/github/ardentsia-cgs/kparser/graph/badge.svg?token=U3C7E272T5)](https://codecov.io/github/ardentsia-cgs/kparser)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 A small, readable parser for the K programming language. One C file,
