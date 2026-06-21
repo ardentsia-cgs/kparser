@@ -181,11 +181,11 @@ In rough order of how much work each would be to add:
 
 ## Helpful links
 
-<https://www.iro.umontreal.ca/~felipe/IFT2030-Automne2002/Complements/tinyc.c>
-<https://www.craftinginterpreters.com/parsing-expressions.html#recursive-descent-parsing>
-<https://github.com/kparc/ksimple>
-<https://llvm.org/docs/tutorial/>
-<https://norvig.com/lispy.html>
+- <https://www.iro.umontreal.ca/~felipe/IFT2030-Automne2002/Complements/tinyc.c>
+- <https://www.craftinginterpreters.com/parsing-expressions.html#recursive-descent-parsing>
+- <https://github.com/kparc/ksimple>
+- <https://llvm.org/docs/tutorial/>
+- <https://norvig.com/lispy.html>
 
 ## License
 
