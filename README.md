@@ -171,6 +171,61 @@ and never backtracks. The payoff is that adverb-derived verbs work in
 infix position — `` 1 2 f' 3 4 `` parses as the `nve` shape
 `` ((`';`f);1 2;3 4) ``, not as juxtaposition.
 
+### Projections and compositions are emergent, not grammatical
+
+Two things a K programmer treats as distinct features — *projections*
+(fixing some of a function's arguments) and *compositions* (chaining
+functions) — have no productions of their own. They fall out of the
+same `t[E]` and `te`/`nve` shapes everything else uses, because the
+grammar is arity-agnostic: it builds application and juxtaposition
+trees and never asks how many arguments a verb wants. Whether a tree is
+an application, a projection, or a composition is an *evaluation*-time
+reading, settled once you know a verb's valence — which is exactly why
+the verb tables exist but stay empty in a parser.
+
+A **projection** is an application with a missing argument. K marks the
+hole with its *generic null* `::` — and notably there is no separate
+"missing" type: the generic null (the monadic colon, `KV1` index 0)
+*is* the hole. The empty `e` (the `e : empty` rule) in an argument
+position becomes `::`:
+
+```
+2+        ->  (+;2;::)        right arg of dyadic + elided
+f[1;;3]   ->  (`f;1;::;3)     middle arg elided
+f[;2]     ->  (`f;::;2)       left arg elided
+f[]       ->  (`f;::)         f[] is f[::]
+```
+
+Note `::` is distinct from `()`: `()` is the empty *list* (a noun), while
+`::` is the generic null filling an elided slot — so the parser keeps
+them apart (the hole substitution happens only in `t[E]` argument lists
+and the `nve` empty-operand case; an empty `(E)` stays `()`). An
+evaluator counts the non-`::` slots against the verb's valence; too few
+means "return a function awaiting the rest" — a projection. No new node
+and no new type, just generic nulls in an ordinary apply tree.
+
+A **composition** is juxtaposition (`te`) where the term and the
+expression are both functions rather than function-and-noun:
+
+```
+|+        ->  (|:;+)          reverse atop plus
+*|+       ->  (*:;(|:;+))     a right-associated verb train
+```
+
+That is the same `(t;e)` shape as `f x` application — the only
+difference is whether `e` resolves to a noun (apply) or a verb
+(compose), which again needs valence to settle. One wrinkle lives in
+the te-branch demotion above: a bare verb head is demoted to monadic
+(`` +* `` → `` (+:;*) ``) while a parenthesized one is not
+(`` (+)(*) `` → `` (+;*) ``, because `(E)` yields a noun-typed term).
+The parser commits to the application reading; a real K runtime would
+revisit it knowing arities.
+
+The lesson is the point of the whole grammar: K's surface stays tiny
+because projection and composition are *not* new syntax. They are what
+the five productions already mean under a valence-aware evaluator. The
+parser's job is to get the shape right, and stop there.
+
 ### Lambda marker uses the sym `` `{ ``
 
 A wrapping list for `{x+y}` is `` (`{; (+;`x;`y)) ``. Using a sym

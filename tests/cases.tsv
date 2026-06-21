@@ -29,8 +29,13 @@ a.b.c	`a.b.c
 // ---- parse_term: indexing  n : t[E] ----
 f[1]	(`f;1)
 f[1;2;3]	(`f;1;2;3)
-f[]	(`f;())
 f[1][2]	((`f;1);2)
+
+// ---- projections: elided argument slots become the generic null :: ----
+f[]	(`f;::)
+f[;2]	(`f;::;2)
+f[1;;3]	(`f;1;::;3)
++[2;]	(+;2;::)
 
 // ---- parse_term: adverbs  v : tA  (all six adverbs) ----
 f'	(`';`f)
@@ -96,8 +101,14 @@ f g h	(`f;(`g;`h))
 2 f' 3 g' 4	((`';`f);2;((`';`g);3;4))
 
 // ---- parse_e: empty rhs / lone forms ----
-2+	(+;2;())
+2+	(+;2;::)
+1+	(+;1;::)
 + -	(+:;-)
+
+// ---- compositions: te juxtaposition of two functions ----
+|+	(|:;+)
+*|+	(*:;(|:;+))
+(+)(*)	(+;*)
 
 // ---- parse_E: top-level semicolons ----
 1	1

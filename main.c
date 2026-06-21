@@ -177,6 +177,12 @@ static K kverb(int monadic, int idx) {
     return x;
 }
 
+/* Generic null `::` -- K's identity value, and the marker for an elided
+ * argument in a projection (f[;2] -> (`f;::;2), 2+ -> (+;2;::)). It is the
+ * monadic colon (KV1, index 0), which print_k renders as "::". K has no
+ * separate "missing" type; the generic null *is* the hole. */
+static K knull(void) { return kverb(1, 0); }
+
 static const char *ADVERB_NAMES[] = { "'", "/", "\\", "':", "/:", "\\:" };
 
 /* ===== lisp-style printer ===== */
@@ -528,7 +534,12 @@ static P parse_term(Parser *p) {
             if (at(p, T_RBRACK)) adv(p);
             K w = ktn(KL, e->n + 1);
             kK(w)[0] = t.v;
-            for (J i = 0; i < e->n; i++) { kK(w)[i+1] = kK(e)[i]; kK(e)[i] = NULL; }
+            /* An elided argument slot (NULL) is the generic null `::`: the
+             * projection f[;2] is (`f;::;2), and f[] is (`f;::). */
+            for (J i = 0; i < e->n; i++) {
+                kK(w)[i+1] = kK(e)[i] ? kK(e)[i] : knull();
+                kK(e)[i] = NULL;
+            }
             dec_ref(e);
             t.v = w; t.role = R_NOUN;
         } else if (tk->kind == T_ADVERB) {
@@ -577,7 +588,9 @@ static P parse_e_from(Parser *p, P t) {
         K w = ktn(KL, 3);
         kK(w)[0] = u.v;
         kK(w)[1] = t.v;
-        kK(w)[2] = e.v;
+        /* Empty right operand is an elided argument: 2+ is the projection
+         * +[2;], i.e. (+;2;::), so mark the hole with the generic null. */
+        kK(w)[2] = e.v ? e.v : knull();
         return (P){R_NOUN, w};
     }
 
