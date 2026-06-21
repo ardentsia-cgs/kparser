@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <limits.h>
 
 /* Pedagogical, minimal parser for the k grammar at
  *   https://k.miraheze.org/wiki/Grammar
@@ -268,16 +269,24 @@ typedef struct {
 
 typedef struct { Token *t; int n; } Tokens;
 
-/* Read one Int starting at src[*p]: optional '-' then run of digits. */
+/* Read one Int starting at src[*p]: optional '-' then run of digits.
+ *
+ * The magnitude is accumulated in a J (64-bit), which can't overflow for
+ * any digit run we accept: as soon as it exceeds the I range we abort, so
+ * the accumulator never climbs past ~INT_MAX*10. This avoids the signed-int
+ * overflow (undefined behavior) a naive `I` accumulator would hit on inputs
+ * like 99999999999. The bound allows INT_MIN for negative literals. */
 static I scan_int(const char *src, int *p) {
     int neg = 0;
     if (src[*p] == '-') { neg = 1; (*p)++; }
-    I n = 0;
+    J limit = (J)INT_MAX + (neg ? 1 : 0);   /* |INT_MIN| = INT_MAX + 1 */
+    J n = 0;
     while (CLASS[(uint8_t)src[*p]] & CL_DIGIT) {
         n = n * 10 + (src[*p] - '0');
+        if (n > limit) die("integer literal out of range");
         (*p)++;
     }
-    return neg ? -n : n;
+    return (I)(neg ? -n : n);
 }
 
 static Tokens scan(const char *src) {
@@ -291,7 +300,7 @@ static Tokens scan(const char *src) {
     int noun_pos = 0;
 
 #define EMIT(TK, KK) do { \
-        if (n >= cap) { cap = cap ? cap * 2 : 32; toks = xrealloc(toks, cap * sizeof(Token)); } \
+        if (n >= cap) { cap = cap ? cap * 2 : 32; toks = xrealloc(toks, (size_t)cap * sizeof(Token)); } \
         toks[n++] = (Token){.kind = (TK), .start = start, .len = p - start, .k = (KK)}; \
     } while (0)
 
@@ -324,7 +333,7 @@ static Tokens scan(const char *src) {
                 k = ki(buf[0]);
             } else {
                 k = ktn(KI, m);
-                memcpy(kI(k), buf, m * sizeof(I));
+                memcpy(kI(k), buf, (size_t)m * sizeof(I));
             }
             EMIT(T_NOUN, k);
             noun_pos = 1;
@@ -338,7 +347,7 @@ static Tokens scan(const char *src) {
             int len = p - start;
             if (len >= MAX_NAME) die("name too long");
             char buf[MAX_NAME];
-            memcpy(buf, src + start, len);
+            memcpy(buf, src + start, (size_t)len);
             buf[len] = '\0';
             EMIT(T_NOUN, ks(buf));
             noun_pos = 1;
@@ -353,13 +362,13 @@ static Tokens scan(const char *src) {
                 int s = p;
                 while ((CLASS[(uint8_t)src[p]] & (CL_ALPHA | CL_DIGIT)) || src[p] == '.') p++;
                 int len = p - s;
-                S str = xmalloc(len + 1);
-                memcpy(str, src + s, len);
+                S str = xmalloc((size_t)len + 1);
+                memcpy(str, src + s, (size_t)len);
                 str[len] = '\0';
                 sbuf[m++] = str;
             }
             K k = ktn(KS, m);
-            memcpy(kS(k), sbuf, m * sizeof(S));
+            memcpy(kS(k), sbuf, (size_t)m * sizeof(S));
             EMIT(T_NOUN, k);
             noun_pos = 1;
         }
@@ -396,7 +405,7 @@ static Tokens scan(const char *src) {
         }
     }
 
-    if (n >= cap) { cap = cap ? cap * 2 : 32; toks = xrealloc(toks, cap * sizeof(Token)); }
+    if (n >= cap) { cap = cap ? cap * 2 : 32; toks = xrealloc(toks, (size_t)cap * sizeof(Token)); }
     toks[n++] = (Token){.kind = T_EOF, .start = p, .len = 0, .k = NULL};
 #undef EMIT
     return (Tokens){toks, n};
@@ -446,6 +455,7 @@ static void adv(Parser *p) { p->pos++; }
 
 static K parse_E(Parser *p);
 static P parse_e(Parser *p);
+static P parse_e_from(Parser *p, P t);
 static P parse_term(Parser *p);
 static P parse_base(Parser *p);
 
@@ -521,22 +531,45 @@ static P parse_term(Parser *p) {
     return t;
 }
 
+/* parse_e parses one term, then hands off to parse_e_from. The split lets
+ * us choose nve-vs-te by the *role* of the next term instead of a one-token
+ * peek. A term's role isn't fixed by its first token: {x+y} is a noun but
+ * {x+y}' is a verb, and f is a noun but f' is a verb. Deciding on the
+ * leading token (the old `at(p, T_VERB)` test) only worked for primitive
+ * verbs and mis-structured noun-derived verbs (tA) in infix position.
+ *
+ * This stays predictive and linear, not backtracking: parse_term consumes
+ * nothing when there is no term (parse_base returns EMPTY without calling
+ * adv), so speculatively parsing the next term is free one-term lookahead.
+ * No token is ever un-read, and each term is parsed exactly once. */
 static P parse_e(Parser *p) {
     P t = parse_term(p);
     if (t.role == R_NONE) return EMPTY;
+    return parse_e_from(p, t);
+}
 
-    if (t.role == R_NOUN && at(p, T_VERB)) {
-        P v = parse_term(p);
+/* Continue an e whose leading term t has already been parsed. */
+static P parse_e_from(Parser *p, P t) {
+    P u = parse_term(p);
+
+    /* No following term: lone term (te with empty rhs). A bare term stands
+     * for itself; a lone dyadic verb keeps its dyadic form (no demotion). */
+    if (u.role == R_NONE) return t;
+
+    /* nve: noun, then verb-term, then the rest. u is whatever parse_term
+     * produced for the second term -- a primitive (KV2) or an adverb-derived
+     * verb (KL) -- so this now catches f', {x+y}', (E)' just like +, %, &. */
+    if (t.role == R_NOUN && u.role == R_VERB) {
         P e = parse_e(p);
         K w = ktn(KL, 3);
-        kK(w)[0] = v.v;
+        kK(w)[0] = u.v;
         kK(w)[1] = t.v;
         kK(w)[2] = e.v;
         return (P){R_NOUN, w};
     }
-    /* te (with possibly empty rhs) */
-    P e = parse_e(p);
-    if (e.role == R_NONE) return t;
+
+    /* te: t applied to an e whose leading term is the u we just parsed. */
+    P e = parse_e_from(p, u);
     /* Verb head in monadic position: build a fresh KV1 from the dyadic
      * primitive's index, then release the old. Adverb-modified verbs are
      * KL, so this check skips them. */

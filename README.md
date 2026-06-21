@@ -19,6 +19,9 @@ make
 
 You get a two-space prompt and one line of AST per input. Ctrl-D exits.
 
+`make test` runs a golden suite (`tests/run.sh` + `tests/cases.tsv`) that
+exercises every route through the scanner, parser, and printer.
+
 ```
   2+3
 (+;2;3)
@@ -151,6 +154,19 @@ te-with-verb-head case in `parse_e` builds a fresh monadic (`KV1`, code
 101) when the verb is found in unary position — so `+1` becomes
 `(+:;1)`. No mutation of K nodes; the demoted form is a new node.
 
+### Choosing nve vs te by term role, not by token
+
+`e : nve | te` turns on one question: after a leading noun, is the next
+term a verb? A single token can't answer it, because a term's role isn't
+fixed by its first character — `{x+y}` is a noun but `` {x+y}' `` is a
+verb, and `f` is a noun but `` f' `` is a verb. So `parse_e` parses the
+next *term* and branches on its role (`R_NOUN`/`R_VERB`) rather than
+peeking the next token. This stays predictive and linear: `parse_term`
+consumes nothing when there is no term, so the one-term lookahead is free
+and never backtracks. The payoff is that adverb-derived verbs work in
+infix position — `` 1 2 f' 3 4 `` parses as the `nve` shape
+`` ((`';`f);1 2;3 4) ``, not as juxtaposition.
+
 ### Lambda marker uses the sym `` `{ ``
 
 A wrapping list for `{x+y}` is `` (`{; (+;`x;`y)) ``. Using a sym
@@ -224,36 +240,42 @@ maps 1:1 to a production rule, and the file you read top-to-bottom is
 the language. Anything else is layering machinery on something small
 enough to fit on screen.
 
-**ANTLR (LL(\*), Java toolchain).** The most plausible "real tool"
-choice. Adaptive LL handles `e : nve | te` cleanly, and semantic
-predicates can express the context-sensitive role of `-` and the
-monadic/dyadic verb decision. The ecosystem is the strongest in the
-space — railroad-diagram output, IDE plugins, runtimes for Java,
-Python, Go, C++, JavaScript, C#. The `.g4` reads almost verbatim like
-the BNF on the wiki page, which is appealing if you want the grammar
-itself to be the spec. The cost: heavy generated code (thousands of
-lines per language target), a JVM at build time, and the `.g4` will
-end up carrying predicates that essentially re-encode the `noun_pos`
-flag — so you don't escape the trickiest bit, you just push it into
-a different file.
+**ANTLR (ALL(\*), Java toolchain).** The most plausible "real tool"
+choice. Adaptive LL handles `e : nve | te` cleanly — and it has to be
+*adaptive*: choosing `nve` vs `te` means looking past a whole term to
+see whether a trailing adverb makes it a verb, which no fixed-token
+LL(1) can do (it's exactly the case the hand-rolled parser settles with
+one-term lookahead). Semantic predicates can express the
+context-sensitive role of `-` and the monadic/dyadic verb decision. The
+ecosystem is the strongest in the space — railroad-diagram output, IDE
+plugins, runtimes for Java, Python, Go, C++, JavaScript, C#. The `.g4`
+reads almost verbatim like the BNF on the wiki page, which is appealing
+if you want the grammar itself to be the spec. The cost: heavy generated
+code (thousands of lines per language target), a JVM at build time, and
+the `.g4` will end up carrying predicates that essentially re-encode the
+`noun_pos` flag — so you don't escape the trickiest bit, you just push
+it into a different file.
 
 **pest (PEG, Rust).** Pure Rust, clean grammar syntax in a `.pest`
-file, ordered choice neatly handles `nve | te` (try `nve` first via
-lookahead). Compiles to a typed parse tree that you walk to build
-`K`. The cost: PEG is whitespace-explicit — you write `~` for "and
-then", not implicit space — so K's whitespace-sensitive vector rule
-(`1 -2 3` is one vector, `1-2 3` is two tokens) makes the grammar
-busier than it looks. PEGs also assume a context-free tokenizer, so
-the sign-vs-subtract rule has to be encoded as alternative productions
-guarded by lookahead, which is uglier than the one-line `noun_pos`
-check in the hand-rolled scanner.
+file, ordered choice neatly handles `nve | te` (try `nve` first,
+backtracking to `te` if the second term turns out not to be a verb) —
+its backtracking even gets the derived-verb case right for free, the one
+a naive single-token recursive descent has to special-case. Compiles to
+a typed parse tree that you walk to build `K`. The cost: PEG is
+whitespace-explicit — you write `~` for "and then", not implicit space —
+so K's whitespace-sensitive vector rule (`1 -2 3` is one vector, `1-2 3`
+is two tokens) makes the grammar busier than it looks. PEGs also assume
+a context-free tokenizer, so the sign-vs-subtract rule has to be encoded
+as alternative productions guarded by lookahead, which is uglier than
+the one-line `noun_pos` check in the hand-rolled scanner.
 
 **Packrat (memoized PEG).** Same syntactic family as pest, with the
 addition that every `(rule, position)` parse result is memoized — so
 backtracking is linear-time rather than potentially exponential. The
 guarantee matters when grammars have deep backtracking (Bryan Ford's
-original Pappy paper used it to parse a Haskell-like language without
-worst-case blowup). For K, the grammar is unambiguous and shallow
+original Pappy generator — itself written in Haskell — used it to parse
+Java in linear time, without worst-case blowup). For K, the grammar is
+unambiguous and shallow
 once the lexer has done its job; recursive descent already runs in
 linear time without memoization, and the memo table is pure memory
 overhead. Janet's PEG and some PEG.js variants do packrat; pest
@@ -269,8 +291,10 @@ spans, recovery, "expected X, found Y" diagnostics. The error story
 is the only real win, and matters more for a production language than
 for a pedagogical reference.
 
-**LALRPOP / yacc / bison (LALR(1)).** Awkward fit. LALR-family tools
-assume the lexer hands them clean, context-free tokens, and K's lexer
+**LALRPOP / yacc / bison (LR(1)/LALR(1)).** Awkward fit. LALRPOP
+defaults to LR(1) (yacc and bison are LALR(1)), but they're the same
+family for this discussion: LR-family tools assume the lexer hands
+them clean, context-free tokens, and K's lexer
 is the hard part. You'd plumb a custom stateful lexer in (matching
 what the current scanner already does), then write a `.lalrpop`/`.y`
 grammar on top of it. Two layers for no payoff. The grammar itself,
@@ -278,7 +302,7 @@ once tokens are disambiguated, is LR-friendly — but you've moved all
 the interesting work to the lexer hook, and the generated parser is
 just a state machine for `nve | te | empty`.
 
-**Earley (Marpa, bison's GLR mode).** Earley parses any context-free
+**Earley (Marpa).** Earley parses any context-free
 grammar, including ambiguous ones, in O(n³) worst case but O(n) for
 unambiguous LR(k)-class grammars like K's. The selling point is
 "handles anything" — invaluable when grammars are genuinely
@@ -314,7 +338,8 @@ and direct recursion gets that for free. Pratt's machinery would
 degenerate to "every infix token has bp=10, right-bp=9" — using a
 dispatch table to do what a plain recursive call already does.
 Worse, Pratt assumes a token's role is fixed at its dispatch entry;
-here, `+` is monadic or dyadic depending on what preceded it, so
+here, `+` is monadic or dyadic depending on what preceded it (and a
+term's role isn't fixed either — `f` is a noun, `` f' `` a verb), so
 you'd be special-casing every verb's nud-vs-led decision anyway.
 Pratt amortizes over many operators with varying precedences and
 associativities; with five productions and one associativity rule,
@@ -338,9 +363,11 @@ whatever your "real" parser does.
 
 The general principle: parser generators amortize their scaffolding
 across a large grammar. K's grammar is too small for the amortization
-to pay off, and its lexer is the part with all the irreducible
-complexity. Reaching for a tool moves the complexity rather than
-removing it.
+to pay off, and its lexer is the part with nearly all the irreducible
+complexity — the one structural parsing wrinkle is the `nve`-vs-`te`
+decision, which needs a term of lookahead rather than a token (see
+"Choosing nve vs te by term role" above). Reaching for a tool moves the
+complexity rather than removing it.
 
 ## Helpful links
 

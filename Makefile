@@ -14,8 +14,9 @@ $(BIN): $(SRC)
 	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
 
 # Stricter warnings — useful while editing the parser.
-# The C11-anonymous-struct warning is expected (we use it intentionally
-# inside the K struct for the flexible-array-tail idiom).
+# The two C11-extension warnings (anonymous struct and anonymous union)
+# are expected: we use them intentionally inside the K struct for the
+# flexible-array-tail idiom.
 strict: CFLAGS += -Wpedantic -Wconversion -Wshadow
 strict: clean $(BIN)
 
@@ -27,7 +28,11 @@ debug: clean $(BIN)
 run: $(BIN)
 	./$(BIN)
 
+# Golden tests: every route through the scanner, parser, and printer.
+test: $(BIN)
+	tests/run.sh ./$(BIN)
+
 clean:
 	rm -f $(BIN)
 
-.PHONY: all strict debug run clean
+.PHONY: all strict debug run test clean
