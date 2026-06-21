@@ -32,7 +32,17 @@ run: $(BIN)
 test: $(BIN)
 	tests/run.sh ./$(BIN)
 
-clean:
-	rm -f $(BIN)
+# Coverage build + line/branch report (requires gcov). Compiles in two
+# steps so the gcov data files are named after main.c on every toolchain,
+# drives the parser with the golden suite, then summarizes coverage.
+coverage: clean
+	$(CC) -O0 -g --coverage -std=c11 -Wall -Wextra -c main.c -o main.o
+	$(CC) --coverage main.o -o $(BIN)
+	tests/run.sh ./$(BIN)
+	gcov -b main.c
+	@rm -f main.o
 
-.PHONY: all strict debug run test clean
+clean:
+	rm -f $(BIN) main.o *.gcda *.gcno *.gcov
+
+.PHONY: all strict debug run test coverage clean

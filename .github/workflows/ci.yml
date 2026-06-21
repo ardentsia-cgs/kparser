@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-test:
+    name: build & test (${{ matrix.cc }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cc: [gcc, clang]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: make CC=${{ matrix.cc }}
+      - name: Golden tests
+        run: make CC=${{ matrix.cc }} test
+
+  warnings:
+    name: warnings (-Werror)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile with -Wall -Wextra -Werror
+        run: cc -std=c11 -Wall -Wextra -Werror -O2 -c main.c -o /dev/null
+
+  sanitizers:
+    name: asan + ubsan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build with AddressSanitizer + UBSan
+        run: cc -std=c11 -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all main.c -o kparser
+      - name: Run suite under sanitizers
+        # Intentional abort paths (die) leak by design, so leak detection
+        # is disabled here; it runs separately on no-abort inputs below.
+        run: ASAN_OPTIONS=detect_leaks=0 tests/run.sh ./kparser
+      - name: Leak check (no-abort inputs, leak detection on)
+        run: |
+          printf '2+3\na:b:42\n(1;2;3)\n{x+y}\nf[1;2;3]\n`a`b`c\n1 2 f'"'"' 3 4\n+/1 2 3 4\n' | ./kparser
+
+  coverage:
+    name: coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build with coverage and run suite
+        run: make coverage
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./main.c.gcov
+          fail_ci_if_error: false
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}

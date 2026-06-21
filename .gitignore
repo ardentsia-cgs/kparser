@@ -1,1 +1,8 @@
 kparser
+
+# build / coverage artifacts
+*.o
+*.gcno
+*.gcda
+*.gcov
+*.dSYM/
