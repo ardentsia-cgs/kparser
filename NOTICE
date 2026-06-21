@@ -1,0 +1,11 @@
+kparser
+Copyright 2026 Charlie Skelton
+
+Licensed under the Apache License, Version 2.0.
+
+This product includes software adapted from the kdb+ C interface header
+(k.h) by KX Systems, Inc. <https://github.com/KxSystems/kdb>, licensed
+under the Apache License, Version 2.0. The K value representation in
+main.c (struct k0, the I/J/S type abbreviations, the kI/kS/kK accessors,
+the KI/KS type codes, and the ka/ki/ks/ktn constructors) is derived from
+k.h and has been reduced and modified for this pedagogical parser.

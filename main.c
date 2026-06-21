@@ -31,6 +31,14 @@ static char *xstrdup(const char *s)        { char *p = strdup(s);     if (!p) di
 
 /* ===== K struct =====
  *
+ * The value representation below (struct k0, the I/J/S type
+ * abbreviations, the kI/kS/kK accessors, the KI/KS type codes, and the
+ * ka/ki/ks/ktn constructors) is adapted from KX Systems' kdb+ C header
+ * k.h (https://github.com/KxSystems/kdb, c/c/k.h), licensed under the
+ * Apache License 2.0. It has been reduced for this parser: the unused
+ * union members and the H/E/F types are dropped, G is signed here, the
+ * tail is G0[1] rather than a flexible array, and there is no evaluator.
+ *
  * Type codes: positive = vector, negative = atom.
  *
  *   KI/-KI  int vector / atom

@@ -379,4 +379,9 @@ complexity rather than removing it.
 
 ## License
 
-Apache License 2.0.
+Apache License 2.0. See `NOTICE` for attributions.
+
+The K value layout in `main.c` is adapted from KX Systems' kdb+ C header
+[`k.h`](https://github.com/KxSystems/kdb/blob/master/c/c/k.h), which is
+licensed under the Apache License 2.0. This project is unaffiliated with
+and not endorsed by KX; KX, kdb+, and q are trademarks of their owner.
