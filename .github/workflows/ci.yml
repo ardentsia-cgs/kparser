@@ -15,7 +15,7 @@ jobs:
       matrix:
         cc: [gcc, clang]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Build
         run: make CC=${{ matrix.cc }}
       - name: Golden tests
@@ -25,7 +25,7 @@ jobs:
     name: warnings (-Werror)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Compile with -Wall -Wextra -Werror
         run: cc -std=c11 -Wall -Wextra -Werror -O2 -c main.c -o /dev/null
 
@@ -33,7 +33,7 @@ jobs:
     name: asan + ubsan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Build with AddressSanitizer + UBSan
         run: cc -std=c11 -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all main.c -o kparser
       - name: Run suite under sanitizers
@@ -48,11 +48,11 @@ jobs:
     name: coverage
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Build with coverage and run suite
         run: make coverage
       - name: Upload to Codecov
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v5
         with:
           files: ./main.c.gcov
           fail_ci_if_error: false
