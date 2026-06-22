@@ -97,6 +97,21 @@ one-element vector. The leading `,` in the printed form is the "enlist"
 marker that distinguishes them. The K type code (negative for atom,
 positive for vector) is doing the same work.
 
+This lisp-style form is doing more than looking tidy. Because it is
+prefix and fully parenthesized, every grouping decision K makes —
+right-to-left order, which verb is monadic, where an argument list ends
+— is made explicit, with no precedence left to infer. `2*3+4` reads
+ambiguously to anyone carrying precedence habits; `(*;2;(+;3;4))` cannot
+be misread. It is, in effect, a Rosetta stone between K's terse surface
+and the S-expression shape that decades of Lisp have made ubiquitous —
+one reason a parse tree is a useful thing to hand a tool reasoning about
+what a K expression *means*.
+
+But it is a *reading* aid, and a narrow one: best for seeing how a single
+fragment grouped. A deeply nested tree is its own thing to read
+carefully — the form earns its keep on shallow fragments and quietly
+loses it as the nesting deepens.
+
 ## Code layout
 
 The file is one continuous read in top-to-bottom order:
@@ -440,7 +455,8 @@ complexity rather than removing it.
 
 Apache License 2.0. See `NOTICE` for attributions.
 
-The K value layout in `main.c` is adapted from KX Systems' kdb+ C header
+The K value layout in `main.c` is adapted from KX Systems' C header
 [`k.h`](https://github.com/KxSystems/kdb/blob/master/c/c/k.h), which is
 licensed under the Apache License 2.0. This project is unaffiliated with
-and not endorsed by KX; KX, kdb+, and q are trademarks of their owner.
+and not endorsed by KX; KX and its product names are trademarks of their
+owner.
