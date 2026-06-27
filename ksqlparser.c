@@ -479,15 +479,23 @@ typedef enum { R_NONE, R_NOUN, R_VERB } Role;
 typedef struct { Role role; K v; } P;
 static const P EMPTY = { R_NONE, NULL };
 
+/* STEP2: bits of Parser.qstop. While parsing a query clause, parse_base
+ * ends the current expression at a terminator. The two terminators are
+ * independent because the `from` table is a single expression (a comma
+ * there is the join verb) whereas select/by/where are comma-separated
+ * phrase lists. */
+#define Q_KW    1   /* stop at a clause keyword: by / from / where       */
+#define Q_COMMA 2   /* stop at a top-level dyadic ',' (phrase separator)  */
+
 typedef struct {
     const char *src;
     Tokens t;
     int pos;
-    int qstop;   /* STEP2: inside a query clause -- by/from/where and a
-                  * top-level ',' act as terminators, not names/join.
-                  * Saved-and-cleared whenever we open ()/[]/{}, so the
-                  * rule is simply "comma is a separator at phrase depth,
-                  * join inside brackets". */
+    int qstop;   /* STEP2: bitmask of Q_KW|Q_COMMA, set while parsing a
+                  * query clause. Saved-and-cleared whenever we open
+                  * ()/[]/{} so commas join (and keywords are plain names)
+                  * inside brackets. The `from` table runs with Q_KW only,
+                  * so a comma joins there instead of separating. */
 } Parser;
 
 static Token *cur(Parser *p) { return &p->t.t[p->pos]; }
@@ -508,9 +516,11 @@ static int sym_is(Token *tk, const char *s) {
     return tk->kind == T_NOUN && tk->k && tk->k->t == -KS && strcmp(tk->k->s, s) == 0;
 }
 
-/* STEP2: is the current token the dyadic join verb used as a separator? */
+/* STEP2: is the current token the dyadic join verb ',' used as a phrase
+ * separator? The monadic enlist `,:` (KV1) is an ordinary verb and never a
+ * separator, so the token must be the dyadic form (KV2). */
 static int is_comma(Token *tk) {
-    return tk->kind == T_VERB && tk->k && tk->k->i == verb_index(',');
+    return tk->kind == T_VERB && tk->k && tk->k->t == KV2 && tk->k->i == verb_index(',');
 }
 
 static P parse_base(Parser *p) {
@@ -523,9 +533,13 @@ static P parse_base(Parser *p) {
         return parse_query(p);
     /* STEP2: inside a query clause, a clause keyword or a top-level comma
      * ends the current expression -- parse_e stops here without consuming,
-     * leaving the token for parse_query / parse_phrase_list to handle. */
-    if (p->qstop &&
-        (sym_is(tk, "by") || sym_is(tk, "from") || sym_is(tk, "where") || is_comma(tk)))
+     * leaving the token for parse_query / parse_phrase_list to handle. The
+     * two stops are gated separately: the `from` table keeps Q_KW (so it
+     * stops at `where`) but drops Q_COMMA (so a comma joins there). */
+    if ((p->qstop & Q_KW) &&
+        (sym_is(tk, "by") || sym_is(tk, "from") || sym_is(tk, "where")))
+        return EMPTY;
+    if ((p->qstop & Q_COMMA) && is_comma(tk))
         return EMPTY;
     switch (tk->kind) {
     case T_NOUN: {
@@ -718,7 +732,7 @@ static P parse_query(Parser *p) {
     adv(p);
 
     int saveq = p->qstop;
-    p->qstop = 1;
+    p->qstop = Q_KW | Q_COMMA;
 
     K a = parse_phrase_list(p);                  /* select / phrase list */
 
@@ -731,7 +745,9 @@ static P parse_query(Parser *p) {
 
     if (!sym_is(cur(p), "from")) die("ksql: expected 'from'");
     adv(p);
+    p->qstop &= ~Q_COMMA;                        /* table is one expr: ',' joins, not separates */
     P tp = parse_e(p);                           /* table expr (stops at where) */
+    p->qstop |= Q_COMMA;                         /* back to phrase mode for where */
     if (!tp.v) die("ksql: expected table after 'from'");
     K t = tp.v;
 
@@ -743,6 +759,14 @@ static P parse_query(Parser *p) {
     } else c = ktn(KL, 0);
 
     p->qstop = saveq;
+
+    /* A query is a complete noun: nothing may trail the clauses but an
+     * expression terminator. A leftover clause keyword here means the
+     * clauses were given out of order (e.g. `by` after `from`); without
+     * this guard it would silently reattach to the query as juxtaposition. */
+    if (!(at(p, T_EOF) || at(p, T_SEMI) ||
+          at(p, T_RPAREN) || at(p, T_RBRACK) || at(p, T_RBRACE)))
+        die("ksql: unexpected token after query");
 
     K w = ktn(KL, 5);
     kK(w)[0] = head;

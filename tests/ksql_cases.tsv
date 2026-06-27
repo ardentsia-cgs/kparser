@@ -38,9 +38,14 @@ select a from (select b from t) where d	(`select;(`select;`t;();();(`b));(`d);()
 // ---- inside ()/[]/{}, comma is the join verb again, not a separator ----
 select (a,b) from t	(`select;`t;();();((,;`a;`b)))
 
-// ---- from-expr is a full expression; it stops at where ----
+// ---- the , separator is only the dyadic join; monadic enlist ,: is a verb ----
+select ,:a from t	(`select;`t;();();((,:;`a)))
+
+// ---- from-expr is a full expression: , joins there, and it stops at where ----
 select a from t lj u	(`select;(`t;(`lj;`u));();();(`a))
 select from t lj `k key u where d	(`select;(`t;(`lj;(,`k;(`key;`u))));(`d);();())
+select a from t,u	(`select;(,;`t;`u);();();(`a))
+select a,b from +`a`b!,:'1 2	(`select;(+:;(!;`a`b;((`';,:);1 2)));();();(`a;`b))
 
 // ---- keywords are reserved only positionally: still names elsewhere ----
 from	`from
@@ -53,3 +58,8 @@ select a by c	@ABORT
 select x,y from	@ABORT
 select x by from t	@ABORT
 select x from t where	@ABORT
+
+// ---- malformed: clauses out of order leave a token trailing the query ----
+select a,b from t,u by a=2	@ABORT
+select a from t by b	@ABORT
+select a from t where d by e	@ABORT

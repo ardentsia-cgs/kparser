@@ -118,45 +118,37 @@ existing code produces:
 
 ## The hard part: the comma
 
-`,` is the join verb (it's in `VERB_CHARS`). But inside a phrase list it
-*separates* phrases. This is the only genuine friction: a comma at the top
-of a phrase is a separator; a comma inside `()`/`[]`/`{}` is join — which
-is why you parenthesize `select (a,b) from t` to *join* `a` and `b`.
+`,` is the join verb. But between phrases in a clause it *separates* —
+`select a,b from t` is two columns, while `select (a,b) from t` joins them.
+Two refinements pin down exactly when a comma is a separator:
 
-That depth rule maps onto the code as a single flag, `qstop`, on the
-`Parser`:
+- it must be the **dyadic** join `,` (a bare comma). The monadic enlist
+  `,:` is an ordinary verb and never separates.
+- it must be at top level **of a clause that is a list** — the select, by,
+  and where phrases. The `from` table is a single expression, so a comma
+  there is join: `select a from t,u` reads `t,u` as one joined table.
 
-- While reading a query clause, `qstop` is set. `parse_base` then returns
-  `EMPTY` (ends the current expression) when it sees a top-level `,` or a
-  clause keyword (`by`/`from`/`where`), leaving that token for the
-  clause/phrase-list loop to step over.
-- Whenever we open `(`/`[`/`{`, `qstop` is saved and cleared, then
-  restored on close — so commas and the words `from`/`by`/`where` go back
-  to their ordinary meanings inside brackets.
+The parser tracks this with two bits on `Parser.qstop`:
 
-So the rule "comma is a separator at phrase depth, join inside brackets"
-becomes the one-line idiom *clear the flag whenever you open a bracket*:
+- `Q_KW` — stop at a clause keyword (`by`/`from`/`where`).
+- `Q_COMMA` — stop at a top-level dyadic comma (the phrase separator).
+
+`parse_base` ends the current expression when the relevant bit is set, so
+`parse_e` halts at a boundary and the clause loop steps over it. Phrase
+lists run with `Q_KW | Q_COMMA`; the `from` expression runs with `Q_KW`
+only (it still stops at `where`, but commas join). Opening any of
+`()`/`[]`/`{}` saves and clears `qstop`, restoring it on close — so inside
+brackets everything is ordinary again, which is why `select (a,b) from t`
+joins.
 
 ```
-  select a,b from t          ->  (`select;`t;();();(`a;`b))   / two phrases
-  select (a,b) from t        ->  (`select;`t;();();((,;`a;`b)))   / one join
+  select a,b from t      ->  (`select;`t;();();(`a;`b))      / two phrases
+  select (a,b) from t    ->  (`select;`t;();();((,;`a;`b)))  / one join (parens)
+  select a from t,u      ->  (`select;(,;`t;`u);();();(`a))  / joined from-table
+  select ,:a from t      ->  (`select;`t;();();((,:;`a)))    / ,: is a verb
 ```
 
 `qstop` is only ever set inside a query, so Step 1 behavior is untouched.
-
-One consequence to know: the `from` table is parsed by the same machinery,
-so a top-level comma terminates it too. `select a from t,u` is therefore
-read as *(select a from t) joined with u*, not as a `from`-table of `t,u`:
-
-```
-  select a from t,u          ->  (,;(`select;`t;();();(`a));`u)
-  select a from (t,u)        ->  (`select;(,;`t;`u);();();(`a))
-```
-
-The comma ends the clause while `qstop` is set, then rejoins as the
-ordinary verb once the query parse restores `qstop`. Parenthesize the
-table to join inside `from`. (This is why the examples below use `lj` /
-`uj`, which are names, not commas.)
 
 ## What was already free
 
@@ -242,6 +234,23 @@ The select/phrase list itself may be empty — `select from t` is a valid
 becomes the generic null `::`, mirroring how the core parser fills a
 projection hole (`f[1;;3]`, `2+`). Anything beyond shape — does the table
 exist, is the column real — is the evaluator's job, not the parser's.
+
+### Clauses must appear in order
+
+A query is a complete noun, and an unparenthesized one is greedy, so the
+only thing that may follow its clauses is an expression terminator — end of
+input, `;`, or a closing `)`/`]`/`}`. `parse_query` checks this at the end.
+Without it, a clause given out of order leaks past the query and the outer
+grammar silently reabsorbs it as juxtaposition. For example `by` after
+`from` would otherwise parse as the query *applied to* `(by …)`:
+
+```
+  select a,b from t,u by a=2   / `by` belongs before `from`
+kparser: ksql: unexpected token after query
+```
+
+Together with `expected 'from'`, this pins the clause order from both ends:
+`from` must appear where expected, and nothing may dangle after the query.
 
 ### What's deferred
 
