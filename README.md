@@ -281,6 +281,16 @@ assignment. The Step 2 code lives in [`ksqlparser.c`](ksqlparser.c)
 (`kparser.c` plus a ~120-line ksql layer); build it with `make ksqlparser`
 and test it with `make test2`.
 
+## Appendix: ksimple's grammar
+
+[`KSIMPLE.md`](KSIMPLE.md) goes the other direction: it reads the implicit
+grammar back out of Arthur Whitney's [`ksimple`](https://github.com/kparc/ksimple),
+a ~100-line learning interpreter that has *no parser* — tokenizing,
+parsing, and eval are fused into one recursive function over a tape of
+one-byte tokens. It boils down to five productions, and keeps exactly the
+two ideas that make K K (right-to-left with no precedence; arity from left
+context) while dropping all structure (`(E)`, `{E}`, `t[E]`, `;`).
+
 ## Why hand-rolled?
 
 For five productions, a parser generator is mostly overhead — but that's
