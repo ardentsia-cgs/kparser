@@ -1,0 +1,55 @@
+// Golden cases for ksqlparser (STEP 2: ksql). Format: <input><TAB><expected AST>.
+// Lines beginning with // are comments; blank lines are ignored.
+// Expected value @ABORT means the input must make the parser exit nonzero.
+//
+// A query desugars to the t[E] application (`verb; t; c; b; a) with
+// t=from c=where b=by a=phrases. Absent clauses are the empty list ().
+
+// ---- select: clauses present/absent ----
+select from t	(`select;`t;();();())
+select a from t	(`select;`t;();();(`a))
+select a,b from t	(`select;`t;();();(`a;`b))
+select a by c from t	(`select;`t;();(`c);(`a))
+select a from t where d	(`select;`t;(`d);();(`a))
+select a by c from t where d	(`select;`t;(`d);(`c);(`a))
+
+// ---- where conditions are ordinary expressions ----
+select a from t where d>0	(`select;`t;((>;`d;0));();(`a))
+select a from t where f=c,h>5	(`select;`t;((=;`f;`c);(>;`h;5));();(`a))
+
+// ---- by and select are comma-separated phrase lists ----
+select a,b by f,g from t	(`select;`t;();(`f;`g);(`a;`b))
+
+// ---- aliases are the existing `:` assignment shape (no new syntax) ----
+select qty:sum amt from t	(`select;`t;();();((:;`qty;(`sum;`amt))))
+update qty:sum amt from t	(`update;`t;();();((:;`qty;(`sum;`amt))))
+select p:sum i,q:avg j by f,g from t where f=c,h>5	(`select;`t;((=;`f;`c);(>;`h;5));(`f;`g);((:;`p;(`sum;`i));(:;`q;(`avg;`j))))
+
+// ---- exec, update, delete share the (verb; t; c; b; a) shape ----
+exec a from t	(`exec;`t;();();(`a))
+update a:x+1 from t	(`update;`t;();();((:;`a;(+;`x;1))))
+delete from t where d	(`delete;`t;(`d);();())
+delete a,b from t	(`delete;`t;();();(`a;`b))
+
+// ---- a query is a noun: it composes and nests ----
+count select a from t	(`count;(`select;`t;();();(`a)))
+select a from (select b from t) where d	(`select;(`select;`t;();();(`b));(`d);();(`a))
+
+// ---- inside ()/[]/{}, comma is the join verb again, not a separator ----
+select (a,b) from t	(`select;`t;();();((,;`a;`b)))
+
+// ---- from-expr is a full expression; it stops at where ----
+select a from t lj u	(`select;(`t;(`lj;`u));();();(`a))
+select from t lj `k key u where d	(`select;(`t;(`lj;(,`k;(`key;`u))));(`d);();())
+
+// ---- keywords are reserved only positionally: still names elsewhere ----
+from	`from
+from:3	(:;`from;3)
+where+1	(+;`where;1)
+
+// ---- malformed: a clause keyword must carry its operand ----
+select a	@ABORT
+select a by c	@ABORT
+select x,y from	@ABORT
+select x by from t	@ABORT
+select x from t where	@ABORT

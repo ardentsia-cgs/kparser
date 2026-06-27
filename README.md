@@ -269,6 +269,18 @@ In rough order of how much work each would be to add:
 - **An evaluator**. The verb function tables are sized and named but
   empty.
 
+## Next: ksql (Step 2)
+
+[`KSQL.md`](KSQL.md) is a follow-on that extends this parser with K's SQL
+dialect — `select` / `exec` / `update` / `delete … by … from … where …`.
+The surprise is how little it costs: a query turns out to be a fourth
+*noun base* (`n : t[E] | (E) | {E} | N | q`) that desugars into the
+application shape you already have, `` (`verb; t; c; b; a) ``. Aliases
+(`qty:sum amt`) need no new syntax at all — they are the existing `:`
+assignment. The Step 2 code lives in [`ksqlparser.c`](ksqlparser.c)
+(`kparser.c` plus a ~120-line ksql layer); build it with `make ksqlparser`
+and test it with `make test2`.
+
 ## Why hand-rolled?
 
 For five productions, a parser generator is mostly overhead — but that's
@@ -448,6 +460,8 @@ complexity rather than removing it.
 - <https://www.iro.umontreal.ca/~felipe/IFT2030-Automne2002/Complements/tinyc.c>
 - <https://www.craftinginterpreters.com/parsing-expressions.html#recursive-descent-parsing>
 - <https://github.com/kparc/ksimple>
+- <https://ref.kparc.io/> (kparc/shakti K reference; documents select/update as `#[t;c;b[;a]]` / `_[t;c;b[;a]]`)
+- <http://nsl.com/k/ksql.k> (Stevan Apter's ksql.k)
 - <https://llvm.org/docs/tutorial/>
 - <https://norvig.com/lispy.html>
 
@@ -455,7 +469,7 @@ complexity rather than removing it.
 
 Apache License 2.0. See `NOTICE` for attributions.
 
-The K value layout in `main.c` is adapted from KX Systems' C header
+The K value layout in `kparser.c` is adapted from KX Systems' C header
 [`k.h`](https://github.com/KxSystems/kdb/blob/master/c/c/k.h), which is
 licensed under the Apache License 2.0. This project is unaffiliated with
 and not endorsed by KX; KX and its product names are trademarks of their

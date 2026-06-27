@@ -20,6 +20,8 @@ jobs:
         run: make CC=${{ matrix.cc }}
       - name: Golden tests
         run: make CC=${{ matrix.cc }} test
+      - name: ksql golden tests (Step 2)
+        run: make CC=${{ matrix.cc }} test2
 
   warnings:
     name: warnings (-Werror)
@@ -27,7 +29,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Compile with -Wall -Wextra -Werror
-        run: cc -std=c11 -Wall -Wextra -Werror -O2 -c main.c -o /dev/null
+        run: cc -std=c11 -Wall -Wextra -Werror -O2 -c kparser.c -o /dev/null
+      - name: Compile Step 2 with -Wall -Wextra -Werror
+        run: cc -std=c11 -Wall -Wextra -Werror -O2 -c ksqlparser.c -o /dev/null
 
   sanitizers:
     name: asan + ubsan
@@ -35,7 +39,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Build with AddressSanitizer + UBSan
-        run: cc -std=c11 -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all main.c -o kparser
+        run: cc -std=c11 -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all kparser.c -o kparser
       - name: Run suite under sanitizers
         # Intentional abort paths (die) leak by design, so leak detection
         # is disabled here; it runs separately on no-abort inputs below.
@@ -43,6 +47,29 @@ jobs:
       - name: Leak check (no-abort inputs, leak detection on)
         run: |
           printf '2+3\na:b:42\n(1;2;3)\n{x+y}\nf[1;2;3]\n`a`b`c\n1 2 f'"'"' 3 4\n+/1 2 3 4\n' | ./kparser
+      - name: Build Step 2 with AddressSanitizer + UBSan
+        run: cc -std=c11 -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all ksqlparser.c -o ksqlparser
+      - name: Run ksql suite under sanitizers
+        run: ASAN_OPTIONS=detect_leaks=0 tests/run.sh ./ksqlparser tests/ksql_cases.tsv
+      - name: Leak check Step 2 (no-abort ksql inputs, leak detection on)
+        run: |
+          printf 'select a,b by c from t where d>0\nupdate qty:sum amt from t\ndelete a,b from t\ncount select a from (select b from t) where d\nselect (a,b) from t\n' | ./ksqlparser
+      - name: Malformed-query abort paths under sanitizers (UBSan active)
+        # Each must abort (nonzero exit). die() leaks by design, so leak
+        # detection is off here; UBSan still flags any UB on the abort path.
+        env:
+          ASAN_OPTIONS: detect_leaks=0
+        run: |
+          for q in \
+            'select x,y from' \
+            'select x by from t' \
+            'select x from t where' \
+            'select a'; do
+            if printf '%s\n' "$q" | ./ksqlparser >/dev/null 2>&1; then
+              echo "FAIL: expected abort for: $q"; exit 1
+            fi
+            echo "ok (abort): $q"
+          done
 
   coverage:
     name: coverage
@@ -54,7 +81,7 @@ jobs:
       - name: Upload to Codecov
         uses: codecov/codecov-action@v5
         with:
-          files: ./main.c.gcov
+          files: ./kparser.c.gcov
           fail_ci_if_error: false
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}

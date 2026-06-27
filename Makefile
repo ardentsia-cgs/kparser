@@ -6,11 +6,18 @@ CFLAGS  ?= -Wall -Wextra -O2 -std=c99
 LDFLAGS ?=
 
 BIN := kparser
-SRC := main.c
+SRC := kparser.c
 
-all: $(BIN)
+# STEP 2: the ksql build (kparser.c + a ksql layer).
+BIN2 := ksqlparser
+SRC2 := ksqlparser.c
+
+all: $(BIN) $(BIN2)
 
 $(BIN): $(SRC)
+	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
+
+$(BIN2): $(SRC2)
 	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
 
 # Stricter warnings — useful while editing the parser.
@@ -28,21 +35,30 @@ debug: clean $(BIN)
 run: $(BIN)
 	./$(BIN)
 
+run2: $(BIN2)
+	./$(BIN2)
+
 # Golden tests: every route through the scanner, parser, and printer.
 test: $(BIN)
 	tests/run.sh ./$(BIN)
 
+# STEP 2 tests: the ksql binary must pass the STEP 1 golden suite too
+# (proving it is a strict superset), then the ksql-specific cases.
+test2: $(BIN2)
+	tests/run.sh ./$(BIN2)
+	tests/run.sh ./$(BIN2) tests/ksql_cases.tsv
+
 # Coverage build + line/branch report (requires gcov). Compiles in two
-# steps so the gcov data files are named after main.c on every toolchain,
+# steps so the gcov data files are named after kparser.c on every toolchain,
 # drives the parser with the golden suite, then summarizes coverage.
 coverage: clean
-	$(CC) -O0 -g --coverage -std=c11 -Wall -Wextra -c main.c -o main.o
-	$(CC) --coverage main.o -o $(BIN)
+	$(CC) -O0 -g --coverage -std=c11 -Wall -Wextra -c kparser.c -o kparser.o
+	$(CC) --coverage kparser.o -o $(BIN)
 	tests/run.sh ./$(BIN)
-	gcov -b main.c
-	@rm -f main.o
+	gcov -b kparser.c
+	@rm -f kparser.o
 
 clean:
-	rm -f $(BIN) main.o *.gcda *.gcno *.gcov
+	rm -f $(BIN) $(BIN2) kparser.o *.gcda *.gcno *.gcov
 
-.PHONY: all strict debug run test coverage clean
+.PHONY: all strict debug run run2 test test2 coverage clean

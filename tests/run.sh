@@ -6,14 +6,15 @@
 # AST (after stripping the two-space prompt). Cases marked @ABORT must make
 # the parser exit with a nonzero status (the die() paths).
 #
-# Usage: tests/run.sh [path-to-kparser-binary]   (default: ./kparser)
+# Usage: tests/run.sh [path-to-kparser-binary] [path-to-cases.tsv]
+#   binary defaults to ./kparser, cases default to tests/cases.tsv.
 # Exit status is 0 iff every case passes.
 
 set -u
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
 BIN="${1:-$DIR/../kparser}"
-CASES="$DIR/cases.tsv"
+CASES="${2:-$DIR/cases.tsv}"
 
 if [ ! -x "$BIN" ]; then
     echo "tests: binary not found or not executable: $BIN" >&2
