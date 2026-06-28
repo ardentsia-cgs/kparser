@@ -479,23 +479,23 @@ typedef enum { R_NONE, R_NOUN, R_VERB } Role;
 typedef struct { Role role; K v; } P;
 static const P EMPTY = { R_NONE, NULL };
 
-/* STEP2: bits of Parser.qstop. While parsing a query clause, parse_base
- * ends the current expression at a terminator. The two terminators are
- * independent because the `from` table is a single expression (a comma
- * there is the join verb) whereas select/by/where are comma-separated
- * phrase lists. */
-#define Q_KW    1   /* stop at a clause keyword: by / from / where       */
-#define Q_COMMA 2   /* stop at a top-level dyadic ',' (phrase separator)  */
+/* STEP2: the parse context for an expression. A query clause bounds the
+ * expression it contains; everywhere else there are no boundaries. The
+ * context is passed explicitly down the expression parser rather than held
+ * as mutable parser state -- so brackets reset it for free: every ()/[]/{}
+ * recurses through parse_E, which always parses at Q_NONE.
+ *
+ *   Q_NONE    ordinary K (all of Step 1): nothing terminates an expr early
+ *   Q_FROM    the `from` table: stop at a clause keyword; ',' still joins
+ *             (the table is one expression, so `from t,u` is a join)
+ *   Q_PHRASE  a select/by/where phrase: stop at a clause keyword AND at a
+ *             top-level dyadic ',' (the phrase separator) */
+typedef enum { Q_NONE, Q_FROM, Q_PHRASE } QCtx;
 
 typedef struct {
     const char *src;
     Tokens t;
     int pos;
-    int qstop;   /* STEP2: bitmask of Q_KW|Q_COMMA, set while parsing a
-                  * query clause. Saved-and-cleared whenever we open
-                  * ()/[]/{} so commas join (and keywords are plain names)
-                  * inside brackets. The `from` table runs with Q_KW only,
-                  * so a comma joins there instead of separating. */
 } Parser;
 
 static Token *cur(Parser *p) { return &p->t.t[p->pos]; }
@@ -503,12 +503,13 @@ static int at(Parser *p, TKind k) { return cur(p)->kind == k; }
 static void adv(Parser *p) { p->pos++; }
 
 static K parse_E(Parser *p);
-static P parse_e(Parser *p);
-static P parse_e_from(Parser *p, P t);
-static P parse_term(Parser *p);
-static P parse_base(Parser *p);
-static P parse_query(Parser *p);        /* STEP2 */
-static K parse_phrase_list(Parser *p);  /* STEP2 */
+static P parse_e(Parser *p, QCtx ctx);
+static P parse_e_from(Parser *p, P t, QCtx ctx);
+static P parse_term(Parser *p, QCtx ctx);
+static P parse_base(Parser *p);              /* Step-1 core, unchanged        */
+static P parse_base_q(Parser *p, QCtx ctx);  /* STEP2: query-aware wrapper     */
+static P parse_query(Parser *p);             /* STEP2 */
+static K parse_phrase_list(Parser *p);       /* STEP2 */
 
 /* STEP2: is the current token the name `s? Query keywords scan as ordinary
  * -KS name tokens; the parser recognizes them positionally by string. */
@@ -523,24 +524,19 @@ static int is_comma(Token *tk) {
     return tk->kind == T_VERB && tk->k && tk->k->t == KV2 && tk->k->i == verb_index(',');
 }
 
+/* STEP2: the four query verbs are reserved at base position (they start a
+ * query); the three clause keywords terminate a clause expression but are
+ * ordinary names anywhere else. Both are recognized positionally by name. */
+static int is_query_verb(Token *tk) {
+    return sym_is(tk, "select") || sym_is(tk, "exec") ||
+           sym_is(tk, "update") || sym_is(tk, "delete");
+}
+static int is_clause_kw(Token *tk) {
+    return sym_is(tk, "by") || sym_is(tk, "from") || sym_is(tk, "where");
+}
+
 static P parse_base(Parser *p) {
     Token *tk = cur(p);
-    /* STEP2: a query is a noun base (n : ... | q). The four query verbs are
-     * reserved at base position; from/by/where stay ordinary names except
-     * inside a query. */
-    if (sym_is(tk, "select") || sym_is(tk, "exec") ||
-        sym_is(tk, "update") || sym_is(tk, "delete"))
-        return parse_query(p);
-    /* STEP2: inside a query clause, a clause keyword or a top-level comma
-     * ends the current expression -- parse_e stops here without consuming,
-     * leaving the token for parse_query / parse_phrase_list to handle. The
-     * two stops are gated separately: the `from` table keeps Q_KW (so it
-     * stops at `where`) but drops Q_COMMA (so a comma joins there). */
-    if ((p->qstop & Q_KW) &&
-        (sym_is(tk, "by") || sym_is(tk, "from") || sym_is(tk, "where")))
-        return EMPTY;
-    if ((p->qstop & Q_COMMA) && is_comma(tk))
-        return EMPTY;
     switch (tk->kind) {
     case T_NOUN: {
         K v = tk->k; tk->k = NULL;
@@ -554,9 +550,7 @@ static P parse_base(Parser *p) {
     }
     case T_LPAREN: {
         adv(p);
-        int sq = p->qstop; p->qstop = 0;  /* STEP2: comma is join inside () */
         K e = parse_E(p);
-        p->qstop = sq;
         if (at(p, T_RPAREN)) adv(p);
         if (e->n == 1) {
             K only = kK(e)[0];
@@ -568,9 +562,7 @@ static P parse_base(Parser *p) {
     }
     case T_LBRACE: {
         adv(p);
-        int sq = p->qstop; p->qstop = 0;  /* STEP2: restore normal parsing */
         K e = parse_E(p);
-        p->qstop = sq;
         if (at(p, T_RBRACE)) adv(p);
         /* Lambda marker is the sym `{ — chosen so it appears in the AST
          * as a literal head distinguishable from any verb. The parse tree
@@ -587,17 +579,31 @@ static P parse_base(Parser *p) {
     }
 }
 
-static P parse_term(Parser *p) {
-    P t = parse_base(p);
+/* STEP2: query-aware base. parse_base itself is exactly the Step-1 core; all
+ * query knowledge lives here. A query verb at base position starts a query
+ * (the fourth noun base, n : ... | q). Inside a clause (ctx != Q_NONE) a
+ * clause keyword ends the current expression, and inside a phrase (Q_PHRASE)
+ * so does a top-level dyadic ',' -- in both cases we return EMPTY without
+ * consuming, leaving the token for parse_query / parse_phrase_list. Brackets
+ * need no special handling: parse_base recurses through parse_E, which parses
+ * at Q_NONE, so inside ()/[]/{} commas join and keywords are plain names. */
+static P parse_base_q(Parser *p, QCtx ctx) {
+    Token *tk = cur(p);
+    if (is_query_verb(tk))                  return parse_query(p);
+    if (ctx != Q_NONE && is_clause_kw(tk))  return EMPTY;
+    if (ctx == Q_PHRASE && is_comma(tk))    return EMPTY;
+    return parse_base(p);
+}
+
+static P parse_term(Parser *p, QCtx ctx) {
+    P t = parse_base_q(p, ctx);
     if (t.role == R_NONE) return t;
 
     for (;;) {
         Token *tk = cur(p);
         if (tk->kind == T_LBRACK) {
             adv(p);
-            int sq = p->qstop; p->qstop = 0;  /* STEP2: restore normal parsing */
             K e = parse_E(p);
-            p->qstop = sq;
             if (at(p, T_RBRACK)) adv(p);
             K w = ktn(KL, e->n + 1);
             kK(w)[0] = t.v;
@@ -633,15 +639,18 @@ static P parse_term(Parser *p) {
  * nothing when there is no term (parse_base returns EMPTY without calling
  * adv), so speculatively parsing the next term is free one-term lookahead.
  * No token is ever un-read, and each term is parsed exactly once. */
-static P parse_e(Parser *p) {
-    P t = parse_term(p);
+static P parse_e(Parser *p, QCtx ctx) {
+    P t = parse_term(p, ctx);
     if (t.role == R_NONE) return EMPTY;
-    return parse_e_from(p, t);
+    return parse_e_from(p, t, ctx);
 }
 
-/* Continue an e whose leading term t has already been parsed. */
-static P parse_e_from(Parser *p, P t) {
-    P u = parse_term(p);
+/* Continue an e whose leading term t has already been parsed. The parse
+ * context flows through unchanged: a top-level ',' or clause keyword ends
+ * the expression at whatever recursion depth it appears (so the right
+ * operand of a verb also halts at the phrase separator). */
+static P parse_e_from(Parser *p, P t, QCtx ctx) {
+    P u = parse_term(p, ctx);
 
     /* No following term: lone term (te with empty rhs). A bare term stands
      * for itself; a lone dyadic verb keeps its dyadic form (no demotion). */
@@ -651,7 +660,7 @@ static P parse_e_from(Parser *p, P t) {
      * produced for the second term -- a primitive (KV2) or an adverb-derived
      * verb (KL) -- so this now catches f', {x+y}', (E)' just like +, %, &. */
     if (t.role == R_NOUN && u.role == R_VERB) {
-        P e = parse_e(p);
+        P e = parse_e(p, ctx);
         K w = ktn(KL, 3);
         kK(w)[0] = u.v;
         kK(w)[1] = t.v;
@@ -662,7 +671,7 @@ static P parse_e_from(Parser *p, P t) {
     }
 
     /* te: t applied to an e whose leading term is the u we just parsed. */
-    P e = parse_e_from(p, u);
+    P e = parse_e_from(p, u, ctx);
     /* Verb head in monadic position: build a fresh KV1 from the dyadic
      * primitive's index, then release the old. Adverb-modified verbs are
      * KL, so this check skips them. */
@@ -679,11 +688,11 @@ static P parse_e_from(Parser *p, P t) {
 
 static K parse_E(Parser *p) {
     K buf[MAX_VEC]; int n = 0;
-    buf[n++] = parse_e(p).v;
+    buf[n++] = parse_e(p, Q_NONE).v;
     while (at(p, T_SEMI)) {
         if (n >= MAX_VEC) die("too many ';'-separated expressions");
         adv(p);
-        buf[n++] = parse_e(p).v;
+        buf[n++] = parse_e(p, Q_NONE).v;
     }
     return klist(buf, n);
 }
@@ -699,18 +708,18 @@ static K parse_E(Parser *p) {
  * the empty list (). Each phrase is an ordinary e, so an aliased phrase
  * `qty:expr` is just the (:;`qty;expr) assignment shape -- no new code.
  *
- * parse_phrase_list reads a comma-separated run of phrases. qstop is set
- * while reading a clause, so parse_e stops at each top-level ',' and at the
- * next clause keyword; this function then steps over the separators. */
+ * parse_phrase_list reads a comma-separated run of phrases. Each phrase is
+ * parsed at Q_PHRASE, so parse_e stops at each top-level ',' and at the next
+ * clause keyword; this function then steps over the separators. */
 static K parse_phrase_list(Parser *p) {
     K buf[MAX_VEC]; int n = 0;
-    P first = parse_e(p);
+    P first = parse_e(p, Q_PHRASE);
     if (first.role == R_NONE) return ktn(KL, 0);   /* no phrases -> () */
     buf[n++] = first.v;
     while (is_comma(cur(p))) {
         adv(p);                                    /* step over separator */
         if (n >= MAX_VEC) die("ksql: too many phrases");
-        P f = parse_e(p);
+        P f = parse_e(p, Q_PHRASE);
         buf[n++] = f.v ? f.v : knull();            /* empty phrase -> :: */
     }
     return klist(buf, n);
@@ -731,9 +740,6 @@ static P parse_query(Parser *p) {
     K head = ks(cur(p)->k->s);   /* `select / `exec / `update / `delete */
     adv(p);
 
-    int saveq = p->qstop;
-    p->qstop = Q_KW | Q_COMMA;
-
     K a = parse_phrase_list(p);                  /* select / phrase list */
 
     K b;
@@ -745,9 +751,7 @@ static P parse_query(Parser *p) {
 
     if (!sym_is(cur(p), "from")) die("ksql: expected 'from'");
     adv(p);
-    p->qstop &= ~Q_COMMA;                        /* table is one expr: ',' joins, not separates */
-    P tp = parse_e(p);                           /* table expr (stops at where) */
-    p->qstop |= Q_COMMA;                         /* back to phrase mode for where */
+    P tp = parse_e(p, Q_FROM);                   /* table is one expr: ',' joins, stops at where */
     if (!tp.v) die("ksql: expected table after 'from'");
     K t = tp.v;
 
@@ -757,8 +761,6 @@ static P parse_query(Parser *p) {
         c = parse_phrase_list(p);
         if (c->n == 0) die("ksql: empty 'where'");
     } else c = ktn(KL, 0);
-
-    p->qstop = saveq;
 
     /* A query is a complete noun: nothing may trail the clauses but an
      * expression terminator. A leftover clause keyword here means the

@@ -128,18 +128,26 @@ Two refinements pin down exactly when a comma is a separator:
   and where phrases. The `from` table is a single expression, so a comma
   there is join: `select a from t,u` reads `t,u` as one joined table.
 
-The parser tracks this with two bits on `Parser.qstop`:
+The parser carries this as an explicit **parse context** threaded down the
+expression parser — a `QCtx` argument, not mutable parser state:
 
-- `Q_KW` — stop at a clause keyword (`by`/`from`/`where`).
-- `Q_COMMA` — stop at a top-level dyadic comma (the phrase separator).
+- `Q_NONE` — ordinary K (all of Step 1): nothing terminates an expr early.
+- `Q_FROM` — the `from` table: stop at a clause keyword; `,` still joins.
+- `Q_PHRASE` — a select/by/where phrase: stop at a clause keyword **and**
+  at a top-level dyadic `,` (the phrase separator).
 
-`parse_base` ends the current expression when the relevant bit is set, so
-`parse_e` halts at a boundary and the clause loop steps over it. Phrase
-lists run with `Q_KW | Q_COMMA`; the `from` expression runs with `Q_KW`
-only (it still stops at `where`, but commas join). Opening any of
-`()`/`[]`/`{}` saves and clears `qstop`, restoring it on close — so inside
-brackets everything is ordinary again, which is why `select (a,b) from t`
-joins.
+A thin wrapper `parse_base_q` consults the context: it ends the current
+expression (returns `EMPTY` without consuming) at a boundary, so `parse_e`
+halts there and the clause loop steps over the separator. The Step-1 core
+`parse_base` is left **byte-for-byte unchanged** — all query knowledge
+lives in the wrapper, so `diff kparser.c ksqlparser.c` keeps the base
+parser clean.
+
+Brackets need no special handling. Every `()`/`[]`/`{}` recurses through
+`parse_E`, which always parses at `Q_NONE`, so inside brackets everything
+is ordinary again — which is why `select (a,b) from t` joins. The context
+is reset *structurally* by the grammar's own recursion, with no
+save/clear/restore bookkeeping.
 
 ```
   select a,b from t      ->  (`select;`t;();();(`a;`b))      / two phrases
@@ -148,7 +156,8 @@ joins.
   select ,:a from t      ->  (`select;`t;();();((,:;`a)))    / ,: is a verb
 ```
 
-`qstop` is only ever set inside a query, so Step 1 behavior is untouched.
+A non-`Q_NONE` context only ever arises inside a query, so Step 1 behavior
+is untouched.
 
 ## What was already free
 
@@ -163,8 +172,9 @@ ordinary K:
 - **The scanner** — `select`, `from`, `by`, `where` all scan as ordinary
   `-KS` name tokens. No new token kind.
 
-The genuinely new code is just `parse_query`, `parse_phrase_list`, the
-`qstop` handling, and the dispatch in `parse_base`.
+The genuinely new code is just `parse_query`, `parse_phrase_list`, and the
+`parse_base_q` wrapper that holds the context (`QCtx`) handling and the
+query dispatch.
 
 ## AST shapes
 
@@ -198,7 +208,8 @@ same way it leaves projection-vs-application to a valence-aware evaluator.
 `select`/`exec`/`update`/`delete` are treated as query verbs whenever they
 appear as a base term — so you can't use them as variable names. But
 `from`/`by`/`where` are recognized as clause keywords *only inside a query*
-(when `qstop` is set); everywhere else they remain ordinary names:
+(when the parse context is not `Q_NONE`); everywhere else they remain
+ordinary names:
 
 ```
   from:3
@@ -264,9 +275,12 @@ ordinary verbs and names, so they need nothing from the grammar.
 The Step 2 additions are tagged `STEP2` or grouped under the
 `===== STEP 2: ksql =====` banner in `ksqlparser.c`:
 
-- a `qstop` field on `Parser`, and the save/clear-on-bracket idiom in
-  `parse_base` / `parse_term`;
-- a dispatch and a terminator check at the top of `parse_base`;
+- a `QCtx` parse context threaded through `parse_e` / `parse_e_from` /
+  `parse_term` (brackets reset it for free via `parse_E`, which always
+  parses at `Q_NONE`);
+- `parse_base_q`, a thin query-aware wrapper around the unchanged Step-1
+  `parse_base`, holding the query dispatch and the terminator checks;
 - `parse_query` (collects the clauses, emits `(verb; t; c; b; a)`) and
   `parse_phrase_list` (a comma-separated run of `e`s);
-- two small helpers, `sym_is` and `is_comma`.
+- four small helpers: `sym_is`, `is_comma`, and the positional keyword
+  predicates `is_query_verb` / `is_clause_kw`.
