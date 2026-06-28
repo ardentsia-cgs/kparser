@@ -502,6 +502,16 @@ static Token *cur(Parser *p) { return &p->t.t[p->pos]; }
 static int at(Parser *p, TKind k) { return cur(p)->kind == k; }
 static void adv(Parser *p) { p->pos++; }
 
+/* Match discipline: an opener requires its closer. Recursive descent needs
+ * no bracket counter -- the call stack already tracks nesting, one parse_E
+ * per level -- so each level just asserts the terminator it expects. A
+ * missing closer is a hard error (fail-fast, like the rest of the parser);
+ * source positions in the message are deferred (see README "What's
+ * missing"). */
+static void expect(Parser *p, TKind k, const char *msg) {
+    if (at(p, k)) adv(p); else die(msg);
+}
+
 static K parse_E(Parser *p);
 static P parse_e(Parser *p, QCtx ctx);
 static P parse_e_from(Parser *p, P t, QCtx ctx);
@@ -551,7 +561,7 @@ static P parse_base(Parser *p) {
     case T_LPAREN: {
         adv(p);
         K e = parse_E(p);
-        if (at(p, T_RPAREN)) adv(p);
+        expect(p, T_RPAREN, "expected ')'");
         if (e->n == 1) {
             K only = kK(e)[0];
             kK(e)[0] = NULL;  /* detach so dec_ref(e) won't recurse into it */
@@ -563,7 +573,7 @@ static P parse_base(Parser *p) {
     case T_LBRACE: {
         adv(p);
         K e = parse_E(p);
-        if (at(p, T_RBRACE)) adv(p);
+        expect(p, T_RBRACE, "expected '}'");
         /* Lambda marker is the sym `{ — chosen so it appears in the AST
          * as a literal head distinguishable from any verb. The parse tree
          * for {x+y} is (`{; (+;`x;`y)); a runtime would substitute the
@@ -604,7 +614,7 @@ static P parse_term(Parser *p, QCtx ctx) {
         if (tk->kind == T_LBRACK) {
             adv(p);
             K e = parse_E(p);
-            if (at(p, T_RBRACK)) adv(p);
+            expect(p, T_RBRACK, "expected ']'");
             K w = ktn(KL, e->n + 1);
             kK(w)[0] = t.v;
             /* An elided argument slot (NULL) is the generic null `::`: the
@@ -783,6 +793,11 @@ static void run(const char *src) {
     Tokens ts = scan(src);
     Parser p = {.src = src, .t = ts, .pos = 0};
     K e = parse_E(&p);
+    /* The outermost level is terminated by end-of-input, the same way a
+     * bracketed level is terminated by its closer. A leftover token here is
+     * a stray closer or trailing junk -- the parser stopped before the end
+     * but the input didn't, so it is malformed. */
+    if (!at(&p, T_EOF)) die("unexpected token");
     if (e->n == 1) print_k(kK(e)[0]); else print_k(e);
     putchar('\n');
     dec_ref(e);          /* recursively releases the whole AST */

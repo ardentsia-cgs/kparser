@@ -256,6 +256,27 @@ enough. An arena allocator would shave allocation time, but the parser
 isn't allocation-bound — an evaluator would be the right time to add
 one.
 
+### Bracket matching is the call stack, not a counter
+
+The parser keeps no bracket-depth counter. In recursive descent the call
+stack already *is* the counter — one `parse_E` per nesting level — so the
+only discipline needed is that every level hit the terminator it expects:
+a bracketed level its closer (`)`/`}`/`]`), the outermost level
+end-of-input. A one-line `expect` helper enforces the closers; `run`
+asserts `T_EOF` after the top-level parse. A missing closer or a stray
+one is a hard `die`, fail-fast like the rest of the parser:
+
+```
+  1+(        kparser: expected ')'
+  1+)        kparser: unexpected token
+```
+
+This is independent of the deliberate hole-filling: `f[]`, `f[;2]`, and
+`2+` are *balanced*, so their elided slots still become `::`. Only
+genuinely unbalanced input errors. (Richer messages naming the offending
+position are the `start`/`len` plumbing listed under *Source-position
+errors* below.)
+
 ## What's missing
 
 In rough order of how much work each would be to add:
