@@ -488,6 +488,27 @@ static P parse_e_from(Parser *p, P t);
 static P parse_term(Parser *p);
 static P parse_base(Parser *p);
 
+/* A `;`-separated run of statements -- the top-level program, and a lambda
+ * body -- is a *sequence*: evaluate each, yield the last. That is not the
+ * same as a list literal (E), which keeps every element; it is the thing
+ * that distinguishes the sequence 1;2;3 from the list (1;2;3). A lone
+ * statement collapses to itself (mirroring the (E) one-element rule); two
+ * or more are wrapped under the sym `; so an evaluator can dispatch on the
+ * head, exactly as it would on `{ for a lambda. Consumes e. */
+static K seq_of(K e) {
+    if (e->n == 1) {
+        K only = kK(e)[0];
+        kK(e)[0] = NULL;   /* detach so dec_ref(e) won't recurse into it */
+        dec_ref(e);
+        return only;
+    }
+    K w = ktn(KL, e->n + 1);
+    kK(w)[0] = ks(";");
+    for (J i = 0; i < e->n; i++) { kK(w)[i+1] = kK(e)[i]; kK(e)[i] = NULL; }
+    dec_ref(e);
+    return w;
+}
+
 static P parse_base(Parser *p) {
     Token *tk = cur(p);
     switch (tk->kind) {
@@ -517,14 +538,13 @@ static P parse_base(Parser *p) {
         adv(p);
         K e = parse_E(p);
         expect(p, T_RBRACE, "expected '}'");
-        /* Lambda marker is the sym `{ — chosen so it appears in the AST
-         * as a literal head distinguishable from any verb. The parse tree
-         * for {x+y} is (`{; (+;`x;`y)); a runtime would substitute the
-         * actual closure value later. */
-        K w = ktn(KL, e->n + 1);
+        /* Lambda marker is the sym `{ — a literal head distinguishable from
+         * any verb. The body is a single (sequence) expression: {x+y} is
+         * (`{;(+;`x;`y)), {a;b} is (`{;(`;;`a;`b)). A runtime would
+         * substitute the actual closure value later. */
+        K w = ktn(KL, 2);
         kK(w)[0] = ks("{");
-        for (J i = 0; i < e->n; i++) { kK(w)[i+1] = kK(e)[i]; kK(e)[i] = NULL; }
-        dec_ref(e);
+        kK(w)[1] = seq_of(e);
         return (P){R_NOUN, w};
     }
     default:
@@ -640,9 +660,10 @@ static void run(const char *src) {
      * a stray closer or trailing junk -- the parser stopped before the end
      * but the input didn't, so it is malformed. */
     if (!at(&p, T_EOF)) die("unexpected token");
-    if (e->n == 1) print_k(kK(e)[0]); else print_k(e);
+    K prog = seq_of(e);   /* the program is a statement sequence, not a list */
+    print_k(prog);
     putchar('\n');
-    dec_ref(e);          /* recursively releases the whole AST */
+    dec_ref(prog);        /* recursively releases the whole AST */
     free_tokens(ts);
 }
 

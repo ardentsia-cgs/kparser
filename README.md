@@ -71,8 +71,10 @@ operates on the rest. The five shapes the parser produces:
 | `n v e`           | `(v; n; e)`                     |
 | `t e`             | `(t; e)`, or just `t` if e is empty |
 | `t[e1;e2;...]`    | `(t; e1; e2; ...)`              |
-| `{e1;e2;...}`     | `` (`{; e1; e2; ...) ``         |
+| `{e}`             | `` (`{; e) ``                   |
+| `{e1;e2;...}`     | `` (`{; (`;; e1; e2; ...)) ``   |
 | `tA`              | `` (`A; t) ``                   |
+| `e1;e2;...`       | `` (`;; e1; e2; ...) `` (top-level sequence) |
 
 Leaf values come from the K type system. There are five types in this
 parser:
@@ -247,6 +249,35 @@ A wrapping list for `{x+y}` is `` (`{; (+;`x;`y)) ``. Using a sym
 (rather than inventing a new type) keeps the type surface small. A
 real K runtime would replace this marker with an actual closure value;
 for parse output, the sym is enough.
+
+The lambda has a fixed shape — `` (`{; body) `` — where `body` is a
+*single* expression. A multi-statement body is that one expression being
+a sequence (next note): `{a;b}` is `` (`{; (`;; `a; `b)) ``. This is
+tidier than splaying the statements directly under `` `{ `` and means an
+evaluator reads the body uniformly, whether it is one expression or many.
+
+### A statement sequence is the sym `` `; ``, distinct from a list
+
+`;` plays three roles, told apart by container. Inside `(E)` it builds a
+**list literal** (every element kept); inside `t[E]` it separates
+**arguments**; at the top level, or in a `{}` body, it sequences
+**statements** — evaluate each, yield the last. The first two already
+carry a head (none for a paren list, the function for an application), but
+a bare statement sequence had none, so it was indistinguishable from a
+list:
+
+```
+  1;2;3      (`;;1;2;3)     // sequence: run all, value is the last
+  (1;2;3)    (1;2;3)        // list literal: three elements
+```
+
+So a sequence of two or more statements is wrapped under the sym `` `; ``
+(a lone statement collapses to itself, exactly like `(E)` with one
+element). `` `; `` can only ever be this marker — `;` lexes as a separator
+token, never a name — so, like `` `{ ``, it is unambiguous as a head. The
+transform lives in one helper, `seq_of`, applied at the two sequence
+contexts (the top-level program in `run`, and the lambda body); list and
+argument contexts are left untouched.
 
 ### Ref counting without an arena
 
