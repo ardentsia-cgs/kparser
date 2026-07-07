@@ -333,6 +333,23 @@ assignment. The Step 2 code lives in [`ksqlparser.c`](ksqlparser.c)
 (`kparser.c` plus a ~120-line ksql layer); build it with `make ksqlparser`
 and test it with `make test2`.
 
+## Next: sql (Step 3)
+
+[`SQL.md`](SQL.md) goes one step further and shows that **standard SQL** — or
+rather a small query subset of it (`SELECT`/`UPDATE`/`DELETE`, no DDL/DCL/TCL) —
+can target the *same* AST. `SELECT * FROM t` parses to the very tree ksql gives
+`select from t` — `` (`select;`t;();();()) `` — because `*` ("all columns")
+desugars to ksql's empty phrase list. The relational core
+(`SELECT`/`FROM`/`WHERE`/`GROUP BY`) maps slot-for-slot into `(verb; t; c; b;
+a)`, while SQL's post-relational clauses (`DISTINCT`/`ORDER BY`/`LIMIT`) wrap
+the query as ordinary K verbs — `SELECT a FROM t ORDER BY x LIMIT 10` is the
+plain K `` 10 # `x asc select a from t ``. The two surfaces are chosen by
+a runtime **mode** (`--sql`/`--ksql`, or `\sql`/`\ksql` in the REPL); the one
+thing SQL needs that K does not is operator *precedence*, so it gets a small
+precedence-climbing expression parser. The Step 3 code lives in
+[`sqlparser.c`](sqlparser.c) (`ksqlparser.c` plus a sql layer and the mode
+switch); build it with `make sqlparser` and test it with `make test3`.
+
 ## Appendix: ksimple's grammar
 
 [`KSIMPLE.md`](KSIMPLE.md) goes the other direction: it reads the implicit

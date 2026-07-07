@@ -1,5 +1,6 @@
 kparser
 ksqlparser
+sqlparser
 
 # build / coverage artifacts
 *.o

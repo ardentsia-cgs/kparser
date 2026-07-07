@@ -1,0 +1,94 @@
+// Golden cases for sqlparser in --sql mode (STEP 3: sql).
+// Format: <input><TAB><expected AST>. Lines beginning with // are comments;
+// blank lines are ignored. Expected value @ABORT means the input must make
+// the parser exit nonzero.
+//
+// SQL targets the SAME (`verb; t; c; b; a) AST as ksql: t=from, c=where,
+// b=group-by, a=select-list. Post-relational clauses (DISTINCT/ORDER BY/
+// LIMIT) wrap the query noun as ordinary verbs.
+
+// ---- the core equivalence: SELECT * is `all columns`, i.e. empty a ----
+SELECT * FROM t	(`select;`t;();();())
+select * from t	(`select;`t;();();())
+
+// ---- keywords are case-insensitive; names keep their case ----
+SeLeCt A FROM T	(`select;`T;();();(`A))
+
+// ---- a select list, comma-separated ----
+SELECT a, b FROM t	(`select;`t;();();(`a;`b))
+
+// ---- WHERE is an ordinary expression; one condition fills c ----
+SELECT a FROM t WHERE d > 0	(`select;`t;((>;`d;0));();(`a))
+
+// ---- top-level AND flattens into the c-list, like ksql's `where d>0,e<5` ----
+SELECT a FROM t WHERE d > 0 AND e < 5	(`select;`t;((>;`d;0);(<;`e;5));();(`a))
+
+// ---- OR stays a single combined phrase (& and | are the K and/or verbs) ----
+SELECT a FROM t WHERE d > 0 OR e < 5	(`select;`t;((|;(>;`d;0);(<;`e;5)));();(`a))
+
+// ---- AND binds tighter than OR (precedence, which K has no notion of) ----
+SELECT a FROM t WHERE a OR b AND c	(`select;`t;((|;`a;(&;`b;`c)));();(`a))
+
+// ---- aliases are the `:` assignment shape; AS reverses ksql's qty:expr ----
+SELECT sum(amt) AS qty FROM t	(`select;`t;();();((:;`qty;(`sum;`amt))))
+
+// ---- the bare `expr name` alias form also works ----
+SELECT sum(amt) qty FROM t	(`select;`t;();();((:;`qty;(`sum;`amt))))
+
+// ---- function calls are the K application shape (`fn;arg;...) ----
+SELECT coalesce(a, b) FROM t	(`select;`t;();();((`coalesce;`a;`b)))
+
+// ---- GROUP BY fills the b slot ----
+SELECT a, b FROM t GROUP BY c	(`select;`t;();(`c);(`a;`b))
+
+// ---- a fuller query: aliases, two conditions, two group keys ----
+SELECT sum(i) AS p, avg(j) AS q FROM t WHERE f = c AND h > 5 GROUP BY f, g	(`select;`t;((=;`f;`c);(>;`h;5));(`f;`g);((:;`p;(`sum;`i));(:;`q;(`avg;`j))))
+
+// ---- arithmetic is left-associative (x-y-z is (x-y)-z, the opposite of K) ----
+SELECT a FROM t WHERE x - y - z > 0	(`select;`t;((>;(-;(-;`x;`y);`z);0));();(`a))
+
+// ---- SQL `/` (divide) maps to K `%`; two-char comparisons are sym heads ----
+SELECT a FROM t WHERE x / y > 1	(`select;`t;((>;(%;`x;`y);1));();(`a))
+SELECT a FROM t WHERE x <> 0	(`select;`t;((`<>;`x;0));();(`a))
+SELECT a FROM t WHERE x >= 1 AND x <= 9	(`select;`t;((`>=;`x;1);(`<=;`x;9));();(`a))
+
+// ---- NOT is looser than comparison: NOT a = b is NOT(a=b) ----
+SELECT a FROM t WHERE NOT a = b	(`select;`t;((~:;(=;`a;`b)));();(`a))
+
+// ---- post-relational clauses wrap the query as ordinary K verbs ----
+// (asc/dsc are kparc's dyadic sort verbs; # take; _ drop; ?: unique)
+SELECT a FROM t ORDER BY x	(`asc;`x;(`select;`t;();();(`a)))
+SELECT a FROM t ORDER BY x DESC	(`dsc;`x;(`select;`t;();();(`a)))
+SELECT a FROM t ORDER BY x, y	(`asc;(`x;`y);(`select;`t;();();(`a)))
+SELECT a FROM t LIMIT 10	(#;10;(`select;`t;();();(`a)))
+SELECT a FROM t LIMIT 10 OFFSET 5	(#;10;(_;5;(`select;`t;();();(`a))))
+SELECT DISTINCT a FROM t	(?:;(`select;`t;();();(`a)))
+
+// ---- wrappers compose in SQL's logical order: DISTINCT, then ORDER, then LIMIT ----
+SELECT DISTINCT a FROM t ORDER BY x LIMIT 10	(#;10;(`asc;`x;(?:;(`select;`t;();();(`a)))))
+
+// ---- UPDATE: SET assignments fill a (the alias shape); b is always () ----
+UPDATE t SET a = x + 1 WHERE d > 0	(`update;`t;((>;`d;0));();((:;`a;(+;`x;1))))
+UPDATE t SET a = 1, b = 2 FROM_NOWHERE	@ABORT
+UPDATE t SET a = 1, b = 2	(`update;`t;();();((:;`a;1);(:;`b;2)))
+
+// ---- DELETE only ever drops rows (fills c) ----
+DELETE FROM t WHERE d > 0	(`delete;`t;((>;`d;0));();())
+DELETE FROM t	(`delete;`t;();();())
+
+// ---- parens keep the OR as one phrase; the outer top-level AND still splits ----
+SELECT a FROM t WHERE (a OR b) AND c	(`select;`t;((|;`a;`b);`c);();(`a))
+
+// ---- malformed: a written clause must carry its operand ----
+SELECT a	@ABORT
+SELECT FROM t	@ABORT
+SELECT a FROM	@ABORT
+SELECT a FROM t WHERE	@ABORT
+SELECT a FROM t GROUP BY	@ABORT
+
+// ---- malformed: clauses out of order leave a token dangling after the query ----
+SELECT a FROM t GROUP BY c WHERE d	@ABORT
+SELECT a FROM t LIMIT 10 ORDER BY x	@ABORT
+
+// ---- malformed: only SELECT/UPDATE/DELETE start a statement ----
+INSERT INTO t	@ABORT

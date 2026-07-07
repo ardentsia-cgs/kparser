@@ -6,8 +6,10 @@
 # AST (after stripping the two-space prompt). Cases marked @ABORT must make
 # the parser exit with a nonzero status (the die() paths).
 #
-# Usage: tests/run.sh [path-to-kparser-binary] [path-to-cases.tsv]
+# Usage: tests/run.sh [path-to-kparser-binary] [path-to-cases.tsv] [binary-flag]
 #   binary defaults to ./kparser, cases default to tests/cases.tsv.
+#   binary-flag (optional) is passed through to the binary, e.g. --sql so the
+#   STEP 3 sql binary parses cases in SQL mode.
 # Exit status is 0 iff every case passes.
 
 set -u
@@ -15,6 +17,7 @@ set -u
 DIR="$(cd "$(dirname "$0")" && pwd)"
 BIN="${1:-$DIR/../kparser}"
 CASES="${2:-$DIR/cases.tsv}"
+BINFLAG="${3:-}"
 
 if [ ! -x "$BIN" ]; then
     echo "tests: binary not found or not executable: $BIN" >&2
@@ -27,7 +30,7 @@ fail=0
 
 # Run one input, return the printed AST with the leading prompt stripped.
 ast_of() {
-    printf '%s\n' "$1" | "$BIN" 2>/dev/null | sed -n '1s/^  //p'
+    printf '%s\n' "$1" | "$BIN" $BINFLAG 2>/dev/null | sed -n '1s/^  //p'
 }
 
 check() { # input  expected
@@ -44,7 +47,7 @@ check() { # input  expected
 
 check_abort() { # input
     local in="$1"
-    printf '%s\n' "$in" | "$BIN" >/dev/null 2>&1
+    printf '%s\n' "$in" | "$BIN" $BINFLAG >/dev/null 2>&1
     if [ "$?" -ne 0 ]; then
         pass=$((pass + 1))
     else
