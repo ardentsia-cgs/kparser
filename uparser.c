@@ -28,13 +28,14 @@
  * STEP 1 is tagged STEP2 or lives in the `===== STEP 2: ksql =====`
  * block. See KSQL.md.
  *
- * STEP 4 (q): this file is ksqlparser.c plus a tiny q layer. q gives each
- * monadic verb its own name (flip, neg, count, ...), so a glyph is always
- * dyadic (KV2) and a named monadic scans as a KV1 verb directly from the
- * keyword table. The parser's demotion block (which inferred monadic arity
- * from position) is replaced with a hard error: a dyadic glyph in monadic
- * position is rejected, not demoted. That is the entire diff: q's naming
- * convention *removes* parser logic rather than adding it. See QPARSER.md.
+ * STEP 4 (q): inherited from qparser.c (itself ksqlparser.c plus a tiny q
+ * layer). q gives each monadic verb its own name (flip, neg, count, ...), so
+ * a glyph is always dyadic (KV2) and a named monadic scans as a KV1 verb
+ * directly from the keyword table. The parser's demotion block (which
+ * inferred monadic arity from position) is replaced with a hard error: a
+ * dyadic glyph in monadic position is rejected, not demoted. That is the
+ * entire diff: q's naming convention *removes* parser logic rather than
+ * adding it. See QPARSER.md.
  *
  * STEP 5 (universal): K and q share the same parser. The only differences
  * are (1) the scanner keyword lookup (off in K, on in q) and (2) what to do
