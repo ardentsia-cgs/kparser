@@ -354,15 +354,19 @@ switch); build it with `make sqlparser` and test it with `make test3`.
 
 [`QPARSER.md`](QPARSER.md) turns to **q**, the query/analytics language
 layered on K, and isolates the one q idea that touches the *parser*:
-**naming the monadic verbs**. In K a single glyph carries two verbs at
-once (`+` is *add* between two operands but *flip* in front of one); q
-splits them, so the glyph is always the dyadic verb and each monadic
-counterpart gets its own name (`flip`, `neg`, `count`, …). The surprise
-is that this makes the parser *smaller*: the demotion block that infers a
-monadic verb from position becomes a hard error, and the existing
-`nve`/`te` machinery absorbs the named keywords for free. The Step 4 code
-lives in [`qparser.c`](qparser.c) (`ksqlparser.c` plus a named-monadics
-layer); build it with `make qparser` and test it with `make test4`.
+**naming the verbs**. In K a single glyph carries two verbs at once (`+`
+is *add* between two operands but *flip* in front of one); q splits them,
+so the glyph is always the dyadic verb and each monadic counterpart gets
+its own name (`flip`, `neg`, `count`, …). q also names a handful of
+dyadic verbs (`lj`, `bin`, `asof`, …), which the scanner tags as `KV2`.
+The surprise is that this makes the parser *smaller*: the demotion block
+that infers a monadic verb from position becomes a hard error, the named
+monadics arrive as `KV1` straight from the scanner, and the named dyads
+cost nothing — the same `nve`/`te` machinery that handles glyph infix
+handles `t lj u` too. The only real change is how the scanner tags the
+token. The Step 4 code lives in [`qparser.c`](qparser.c) (`ksqlparser.c`
+plus a named-verb layer); build it with `make qparser` and test it with
+`make test4`.
 
 ## Next: uparser (Step 5)
 
