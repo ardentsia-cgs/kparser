@@ -128,23 +128,31 @@ it just sees more tokens in the `V` class. This is a lexer change, not a
 grammar one: `parse_base` returns `R_VERB` for a `T_VERB` token regardless
 of whether it came from a glyph or a keyword.
 
-And here's the payoff: **the existing `nve`/`te` machinery already absorbs
-q keywords for free**, as long as the lexer tags them as verbs:
+And here's the payoff: **the existing `nve`/`te` machinery already routes
+q keywords the right way**, as long as the lexer tags them as verbs:
 
 - `count x` → leading verb → `te` → `(count; x)` (unary application)
-- `t lj u`  → noun, named-verb, rest → `nve` → `(lj; t; u)` (binary infix)
+- `t lj u`  → noun, dyadic verb, rest → `nve` → `(lj; t; u)` (binary infix)
+- `n til x`  → noun, *monadic* verb → not an infix → `te` → `(n; (til; x))`
 
-That's the same role-based decision `parse_e` already makes (branch on
-`R_NOUN`/`R_VERB`); it never needed a verb's *arity*, only its *role*. So
-rank stays an evaluation-time concern — consistent with the "verbs are
-arity-agnostic" design note in [`README.md`](README.md). We wouldn't need a
-rank table to get the tree shapes right.
+That's mostly the same role-based decision `parse_e` already makes (branch
+on `R_NOUN`/`R_VERB`). The one thing q adds is that the infix choice must
+now consult *arity*: a monadic keyword can't be a dyadic infix, so the nve
+branch fires only for a dyadic verb. But this is cheap precisely because
+of the naming convention — arity is a property of the token (`KV1` vs
+`KV2`), read directly, not inferred from position as K's demotion does.
+Full rank (does monadic `til` accept *this* value?) still stays an
+evaluation-time concern, consistent with the "verbs are arity-agnostic"
+design note in [`README.md`](README.md); the parser only needs the
+monadic-vs-dyadic bit, and the token already carries it.
 
 ## The code diff
 
-Three spots, each small and localized. The `nve`/`te` role machinery, the
-`parse_term` adverb loop, `parse_base`, `parse_E`, the K types, the
-ref-counting, the ksql layer — all untouched.
+Three spots, each small and localized. The `parse_term` adverb loop,
+`parse_base`, `parse_E`, the K types, the ref-counting, and the ksql layer
+are all untouched. The `nve`/`te` role machinery in `parse_e_from` gains
+two small arity checks — the two halves of §2 — but its structure is
+otherwise unchanged.
 
 ### 1. Scanner: small keyword tables
 
@@ -196,7 +204,7 @@ don't collide with the glyphs. Both are a tiny slice of q's ~170-entry
 dictionary; the rest are ordinary names that need no lexer recognition,
 because only verbs affect the parser's role/arity logic.
 
-### 2. Parser: the demotion block becomes a hard error
+### 2. Parser: two arity checks in `parse_e_from`
 
 This is the heart of the demonstration. kparser's `parse_e_from` contains
 a block that exists *only* because K overloads one glyph for two arities
@@ -226,10 +234,32 @@ if (t.role == R_VERB && t.v && t.v->t == KV2) {
 }
 ```
 
-So `+1` is a parse error in q; the user writes `flip 1`. This is the
-entire parser-side diff: the demotion is replaced by rejection. The
-parser gets smaller (the demotion logic is gone) and stricter (a
-dyadic glyph in monadic position is caught at parse time, not eval).
+So `+1` is a parse error in q; the user writes `flip 1`. The demotion is
+replaced by rejection: the parser gets smaller (the demotion logic is gone)
+and stricter (a dyadic glyph in monadic position is caught at parse time,
+not eval).
+
+That handles a *dyadic* glyph in *monadic* position. The mirror case is a
+*monadic* keyword in *dyadic* position, and it lives in the nve branch of
+the same function. In K every `noun verb rest` is an infix `nve`, because
+any glyph can be dyadic. In q a named monadic (`KV1`) has no dyadic form,
+so it must not be claimed as an infix — the nve branch simply skips it:
+
+```c
+/* nve fires only for a DYADIC verb-term (KV2 glyph/dyad, or an
+ * adverb-derived KL). A bare KV1 has no dyadic form, so fall through. */
+if (t.role == R_NOUN && u.role == R_VERB && !(u.v && u.v->t == KV1)) {
+    ...   /* build the 3-element infix (u; t; rest) */
+}
+```
+
+Skipping the branch lets the `KV1` fall through to `te`, where it heads its
+own application. So `f til 10` is *not* `til[f;10]`; it is `f` applied to
+`(til 10)` — `` (`f;(til;10)) `` — and `5 til 10` is `(5;(til;10))`. Adverb-
+derived verbs are `KL` (variadic), not `KV1`, so `1 +/ 2 3` and
+`1 count/ 2 3` still infix. Between them, the two checks are the whole
+parser-side diff: reject a `KV2` in monadic position, and don't infix a
+`KV1`. Both fall straight out of "arity is read from the token."
 
 ### 3. Printer: render named monadics by name
 
@@ -272,18 +302,18 @@ and a named dyad is just a `KV2` whose index falls past the glyphs.
 
 ## What changes at the parse tree
 
-The demotion block's replacement with a hard error becomes visible in
-exactly one place: a dyadic glyph in monadic position. In K, the parser
-demotes it to `KV1`. In q, it is a parse error — there is no monadic form
-of a glyph, and the parser no longer infers one.
-
-The simplest example is `+1` — a dyadic glyph with one operand:
+The demotion check is the one that *changes a tree* between K and q: a
+dyadic glyph with no left operand. The nve check is different — it doesn't
+create a K-vs-q divergence, it *preserves the K shape*: because a named
+monadic follows a noun as a `te` (not an infix), `5 til 10` has the same
+structure in both languages, just a different head rendering.
 
 | input | K (kparser today) | q (named monadics) |
 |-------|-------------------|--------------------|
 | `+1` | `(+:;1)` | error² |
 | `2+1` | `(+;2;1)` | `(+;2;1)` |
 | `til 10` | `(`til;10)`¹ | `(til;10)` |
+| `5 til 10` | `(5;(`til;10))`¹ | `(5;(til;10))` |
 | `2+/til 10` | `((`/;+);2;(`til;10))`¹ | `((`/;+);2;(til;10))` |
 
 ¹ In K, `til` is an ordinary name (noun); `til 10` is juxtaposition `te`
@@ -295,6 +325,14 @@ than `` `til `` (a sym atom).
 ² In q, `+` is strictly dyadic. With no left operand and no demotion,
 `+1` is a parse error — `+` can't be monadic (that's `flip`), and there's
 no left operand for dyadic add. The user writes `flip 1` instead.
+
+The `5 til 10` row is where the nve check earns its keep. `til` is a `KV1`
+verb, but K's rule "noun, verb, rest → infix" would wrongly build
+`(til;5;10)` — a two-argument application of a one-argument verb. The nve
+check excludes `KV1`, so the verb falls through to `te`: `til` heads its
+own application `(til 10)`, and the leading `5` applies to that. This
+matches K, where `til` is a plain noun and `5 til 10` is likewise
+`5` applied to `(til 10)` — same shape, only the head prints differently.
 
 The `2+/til 10` row is worth noting: it works in *both* K and q, because
 the `2` gives `+` a left operand, making `+/` dyadic-over (fold with
@@ -325,14 +363,18 @@ simpler, not harder:
   transformation on the AST node. The parser is doing work that, strictly,
   belongs to a valence-aware evaluator.
 - In q, the parser *reads* arity from the token. A glyph is `KV2`; a
-  named monadic is `KV1`. No inference, no transformation. The demotion
-  block is dead code.
+  named monadic is `KV1`. No inference, no transformation — the demotion
+  is gone. In its place are two trivial token tests: reject a `KV2` in
+  monadic position, and don't infix a `KV1`. Guessing (a mutation of the
+  tree) is replaced by reading (a one-bit check on the token).
 
 This is the same lesson [`KSQL.md`](KSQL.md) reaches from the query side
 (a query is sugar for an application, not new syntax) and
 [`KSIMPLE.md`](KSIMPLE.md) reaches from the minimal side (strip K down
 and the grammar nearly vanishes). q's contribution to the *parser* is
-negative: it removes the one place the parser guesses about arity.
+not new machinery: it deletes the one place K guesses about arity and
+replaces it with two checks that just read the bit the token already
+carries.
 
 ## The through-line
 
@@ -340,8 +382,9 @@ q looks like a different language, but structurally it is K with a
 different verb naming convention. The complexity people associate with q
 — the keyword dictionary, the literal/type surface, the namespaces — lives
 in the lexer and the evaluator, not the grammar. The one grammatical move
-q makes is naming the monadics, and that move *removes* parser logic
-rather than adding it.
+q makes is naming the monadics, and that move trades the parser's arity
+*inference* (K's demotion) for two arity *reads* off the token — less
+logic, not more, and no new machinery.
 
 The five steps then form a clean progression, each demonstrating one
 grammatical idea with a minimal diff:

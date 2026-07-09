@@ -868,10 +868,17 @@ static P parse_e_from(Parser *p, P t, QCtx ctx) {
      * for itself; a lone dyadic verb keeps its dyadic form (no demotion). */
     if (u.role == R_NONE) return t;
 
-    /* nve: noun, then verb-term, then the rest. u is whatever parse_term
-     * produced for the second term -- a primitive (KV2) or an adverb-derived
-     * verb (KL) -- so this now catches f', {x+y}', (E)' just like +, %, &. */
-    if (t.role == R_NOUN && u.role == R_VERB) {
+    /* nve: noun, then DYADIC verb-term, then the rest. u is whatever
+     * parse_term produced for the second term -- a primitive (KV2), a
+     * named dyad (KV2), or an adverb-derived verb (KL) -- so this catches
+     * f', {x+y}', (E)' just like +, %, &.
+     *
+     * STEP4: a named monadic (KV1) has no dyadic form, so it is NOT an
+     * infix here. `f til 10` is not `til[f;10]`; it is `f` applied to
+     * `(til 10)` -- a te with f as head. We fall through to the te branch
+     * below, which parses `til 10` as the right operand. Adverb-derived
+     * verbs are KL (variadic), not KV1, so `1 +/ 2 3` still infixes. */
+    if (t.role == R_NOUN && u.role == R_VERB && !(u.v && u.v->t == KV1)) {
         P e = parse_e(p, ctx);
         K w = ktn(KL, 3);
         kK(w)[0] = u.v;

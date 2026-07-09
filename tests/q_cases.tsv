@@ -46,9 +46,18 @@ get `a	(get;,`a)
 2!3	(!;2;3)
 1 2 3,4 5 6	(,;1 2 3;4 5 6)
 
-// ---- named monadic in nve (infix) position: not applicable ----
-// named monadics are monadic only; they can't appear as dyadic infix.
-// But a named monadic can be the right operand of a dyadic:
+// ---- named monadic after a noun is NOT a dyadic infix ----
+// A named monadic (KV1) has no dyadic form, so `n til x` is not til[n;x].
+// It is a te: n applied to (til x). `f til 10` is f applied to (til 10),
+// and `5 til 10` is 5 applied to (til 10) -- the KV1 heads its own te,
+// then the whole thing is the right operand of the leading noun.
+f til 10	(`f;(til;10))
+5 til 10	(5;(til;10))
+5 flip 10	(5;(flip;10))
+// (+/) parenthesizes to a noun; the derived verb +/ is KL (variadic), so
+// (+/)til 10 is the derived verb applied to (til 10).
+(+/)til 10	((`/;+);(til;10))
+// A named monadic can also be the right operand of a dyadic glyph:
 2+count 1 2 3	(+;2;(count;1 2 3))
 
 // ---- dyadic keywords: same nve machinery as glyph infix ----
