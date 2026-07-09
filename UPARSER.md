@@ -19,14 +19,17 @@ K and q disagree in exactly two decisions:
 
 | Decision | K | q |
 |---|---|---|
-| Is `flip` a verb? | No — it's an ordinary name (`-KS` noun) | Yes — it's a named monadic (`KV1` verb) |
+| Is a keyword name (`flip`, `lj`) a verb? | No — it's an ordinary name (`-KS` noun) | Yes — a named monadic (`KV1`) or dyad (`KV2`) |
 | `+1` (bare glyph, monadic position)? | Demote `KV2` → `KV1`: `(+:;1)` | Hard error: glyphs are always dyadic |
 
 Everything else — the nve/te machinery, adverbs, brackets, lambdas, ksql
 queries, table literals, ref-counting, K types — is identical.  So the
-parser doesn't need two implementations; it needs two **gates**: one in the
-scanner (keyword lookup on or off) and one in the demotion branch (demote
-or reject).
+parser doesn't need two implementations; it needs a mode flag consulted at
+three points: the scanner (keyword lookup on or off), the demotion branch
+(demote or reject), and the printer (render a verb by name or by glyph).
+The first two are the two decisions above; the third is the rendering
+consequence of the first (a KV1/KV2 node has to print differently
+depending on how it was tagged).
 
 ## The three gates
 
@@ -73,14 +76,20 @@ The printer renders `KV1` and `KV2` nodes by name only in q mode:
 
 ```c
 case KV1:
-    if (parser_mode == M_Q && ...) printf("%s", MONADIC_NAMES[...]);
+    if (parser_mode == M_Q && x->i - 1 < (int)NMONADICS)
+        printf("%s", MONADIC_NAMES[x->i - 1]);
     else { putchar(VERB_CHARS[x->i]); putchar(':'); }
+    break;
+case KV2:
+    if (x->i < (int)NVERBS) putchar(VERB_CHARS[x->i]);
+    else if (parser_mode == M_Q) printf("%s", DYADIC_NAMES[x->i - (int)NVERBS]);
     break;
 ```
 
 In K mode, `(+:;1)` prints as `(+:;1)`.  In q mode, `(flip;1)` prints as
-`(flip;1)`.  Same node type, same index — the printer resolves the
-rendering.
+`(flip;1)`, and a named dyad like `lj` prints as `lj` rather than a glyph.
+Same node type, same index — the printer resolves the rendering from the
+mode.
 
 ## Mode control
 
@@ -143,6 +152,6 @@ The five steps form a clean narrative about grammar:
 
 Step 5 closes the circle.  Step 1 infers arity from position.  Step 4
 removes that inference by naming verbs.  Step 5 shows that both
-approaches coexist in a single codebase, gated by a three-line mode flag.
-The two aren't different parsers — they're two answers to the same
-question.
+approaches coexist in a single codebase, gated by a single mode flag read
+at three points (scanner, demotion, printer).  The two aren't different
+parsers — they're two answers to the same question.
