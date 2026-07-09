@@ -23,12 +23,15 @@ removes parser logic rather than adding it.
 
 ## Scope
 
-This step demonstrates **only** the named-monadic design move. Everything
-else q adds over K is out of scope, for the same reason `kparser` defers
-floats, strings, and an evaluator: the project's contract is to demonstrate
-*grammar* — how the surface maps to trees — and stop. Representing q's
-value types, keyword dictionary, and namespace system is eval-time work,
-not grammar work.
+The named-monadic move is the headline, but this step implements the other
+q surface features that are *pure grammar* — that reuse existing node
+shapes and cost the parser nothing new: named dyads (`lj`, `bin`, …),
+table/dict literals (they desugar to `flip` and `!`), and lambda parameter
+lists. What it leaves out is everything that would need new value types or
+an evaluator, for the same reason `kparser` defers floats, strings, and
+eval: the project's contract is to demonstrate *grammar* — how the surface
+maps to trees — and stop. q's value types, keyword dictionary, and
+namespace system are eval-time work, not grammar work.
 
 What is explicitly deferred:
 
@@ -45,25 +48,30 @@ What is explicitly deferred:
   lexer recognition — the rest are ordinary names.
 - **Namespace/context references** (`.q.foo`, `.z.ts`) — a lexer concern
   (leading-dot names), not a grammar one.
-- **Table/dict literals** (`([]a:1 2;b:3 4)`, `([k:v] a:1)`) — desugar to
-  `!` (dict) and `flip` (monadic `+`), the same verbs K already has.  No
-  new type code; the parser assembles existing KV1/KV2 nodes.
 - **Control forms** (`$[c;t;f]`, `if[…]`, `while[…]`, `do[…]`) — these
   ride the existing `t[E]` application shape with a reserved head, the
   same desugaring trick used for `select` in [`KSQL.md`](KSQL.md). Free
   for the parser, but again a separate feature.
 - **`insert` / `upsert`** — the `[t;d]` shape, deferred in ksql too.
 
-A note on two things that *look* like q additions but aren't:
+What *is* implemented beyond the named verbs, because it's pure grammar
+over nodes K already has:
+
+- **Table/dict literals** (`([]a:1 2;b:3 4)`, `([k:v] a:1)`) — desugar to
+  `flip` (monadic `+`) and `!` (dict), the same verbs K already has, so
+  `([]a:1 2;b:3 4)` parses to `` (flip;(!;`a`b;(1 2;3 4))) ``. `parse_base`
+  peeks for a `[` right after `(` and hands off to a small `parse_table`;
+  no new type code, just assembly of existing `KV1`/`KV2` nodes.
+- **Lambda parameter lists** (`{[a;b] a+b}`) — the `[...]` inside `{...}`
+  is parsed by `parse_base`'s `T_LBRACE` handler before `parse_term` sees
+  it, so there's no conflict with `f[x]` indexing. Each param must be a
+  bare name; without params the AST is the same 2-element KL as before.
+
+And one thing that *looks* like a q addition but isn't:
 
 - **`::`** (global assign, view, identity) is already in K. kparser
   represents it as `knull()` — the monadic colon, `KV1` index 0. q adds
   nothing here.
-- **Lambda parameter lists** (`{[a;b] a+b}`) — implemented. The `[...]`
-  inside `{...}` is parsed by `parse_base`'s T_LBRACE handler before
-  `parse_term` sees it, so there's no conflict with `f[x]` indexing.
-  Each param must be a bare name; without params the AST is the same
-  2-element KL as before.
 
 ## The one idea: one token, one verb
 
