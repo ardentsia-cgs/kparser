@@ -26,10 +26,9 @@ Everything else — the nve/te machinery, adverbs, brackets, lambdas, ksql
 queries, table literals, ref-counting, K types — is identical.  So the
 parser doesn't need two implementations; it needs a mode flag consulted at
 three points: the scanner (keyword lookup on or off), the demotion branch
-(demote or reject), and the printer (render a verb by name or by glyph).
-The first two are the two decisions above; the third is the rendering
-consequence of the first (a KV1/KV2 node has to print differently
-depending on how it was tagged).
+(demote or reject), and the printer (render a q keyword spelling by name or
+an explicit glyph-colon form by glyph). The scanner stores that spelling
+provenance in the existing `u` byte on named-monadic `KV1` nodes.
 
 ## The three gates
 
@@ -42,15 +41,16 @@ skipped; every alphanumeric token is a noun, as in `kparser.c`.
 ```c
 if (mode == M_Q) {
     int midx = monadic_keyword(buf);
-    if (midx >= 0) { EMIT(T_VERB, kverb(1, midx)); ... }
+    if (midx >= 0) { EMIT(T_VERB, kverb_qname(midx)); ... }
     else { int didx = dyadic_keyword(buf); ... }
 } else {
     EMIT(T_NOUN, ks(buf));   // K mode: everything is a name
 }
 ```
 
-This is the heavy lifter.  Once tokens are tagged, the parser doesn't care
-how they got their types.
+This is the heavy lifter. Once tokens are tagged, the parser mostly works
+by role; the one q-specific nve check consults the named-monadic provenance
+bit so `f flip x` stays a `te` while `f +: x` remains an infix/update form.
 
 ### Gate 2: demotion
 
@@ -72,11 +72,12 @@ hit this branch.
 
 ### Gate 3: printer
 
-The printer renders `KV1` and `KV2` nodes by name only in q mode:
+The printer renders provenance-marked `KV1` nodes and named `KV2` nodes by
+name only in q mode:
 
 ```c
 case KV1:
-    if (parser_mode == M_Q && x->i - 1 < (int)NMONADICS)
+    if (parser_mode == M_Q && (x->u & V_QNAME) && x->i - 1 < (int)NMONADICS)
         printf("%s", MONADIC_NAMES[x->i - 1]);
     else { putchar(VERB_CHARS[x->i]); putchar(':'); }
     break;
@@ -86,10 +87,9 @@ case KV2:
     break;
 ```
 
-In K mode, `(+:;1)` prints as `(+:;1)`.  In q mode, `(flip;1)` prints as
-`(flip;1)`, and a named dyad like `lj` prints as `lj` rather than a glyph.
-Same node type, same index — the printer resolves the rendering from the
-mode.
+In K mode, `(+:;1)` prints as `(+:;1)`. In q mode, a keyword-origin
+monadic prints as `(flip;1)`, while an explicit glyph-colon source remains
+`(+:;1)`. A named dyad like `lj` prints as `lj` rather than a glyph.
 
 ## Mode control
 

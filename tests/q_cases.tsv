@@ -6,7 +6,7 @@
 // (flip, neg, count, ...), not demoted glyphs. A glyph is always dyadic.
 // The parser's demotion block is gone; arity is read from the token.
 
-// ---- named monadics: each keyword scans as a KN1 verb ----
+// ---- named monadics: each keyword scans as a KV1 verb ----
 flip 1 2 3	(flip;1 2 3)
 neg 5	(neg;5)
 first 1 2 3	(first;1 2 3)
@@ -46,12 +46,20 @@ get `a	(get;,`a)
 2!3	(!;2;3)
 1 2 3,4 5 6	(,;1 2 3;4 5 6)
 
+// ---- explicit glyph-colon forms stay infix/update heads ----
+a+:b	(+:;`a;`b)
+f +: x	(+:;`f;`x)
+a-:b	(-:;`a;`b)
+a,:b	(,:;`a;`b)
+a::b	(::;`a;`b)
+
 // ---- named monadic after a noun is NOT a dyadic infix ----
 // A named monadic (KV1) has no dyadic form, so `n til x` is not til[n;x].
 // It is a te: n applied to (til x). `f til 10` is f applied to (til 10),
 // and `5 til 10` is 5 applied to (til 10) -- the KV1 heads its own te,
 // then the whole thing is the right operand of the leading noun.
 f til 10	(`f;(til;10))
+f flip x	(`f;(flip;`x))
 5 til 10	(5;(til;10))
 5 flip 10	(5;(flip;10))
 // (+/) parenthesizes to a noun; the derived verb +/ is KL (variadic), so

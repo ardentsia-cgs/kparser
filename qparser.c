@@ -29,12 +29,13 @@
  * block. See KSQL.md.
  *
  * STEP 4 (q): this file is ksqlparser.c plus a tiny q layer. q gives each
- * monadic verb its own name (flip, neg, count, ...), so a glyph is always
+ * monadic verb its own name (flip, neg, count, ...), so a bare glyph is
  * dyadic (KV2) and a named monadic scans as a KV1 verb directly from the
- * keyword table. The parser's demotion block (which inferred monadic arity
- * from position) is replaced with a hard error: a dyadic glyph in monadic
- * position is rejected, not demoted. That is the entire diff: q's naming
- * convention *removes* parser logic rather than adding it. See QPARSER.md. */
+ * keyword table. Explicit glyph-colon forms such as +: are also KV1, so the
+ * scanner stores one provenance bit to distinguish them from named keywords.
+ * The parser's demotion block (which inferred monadic arity from position) is
+ * replaced with a hard error: a dyadic glyph in monadic position is rejected,
+ * not demoted. See QPARSER.md. */
 
 /* Safety constants. Real K would grow these dynamically; we bound them
  * statically and abort on overflow to keep the pedagogical version short. */
@@ -191,10 +192,22 @@ static int verb_index(char c) {
     return p ? (int)(p - VERB_CHARS) : -1;
 }
 
+#define V_QNAME 1   /* q named-monadic spelling (flip, neg, count, ...). */
+
 static K kverb(int monadic, int idx) {
     K x = ka(monadic ? KV1 : KV2);
     x->i = idx;
     return x;
+}
+
+static K kverb_qname(int idx) {
+    K x = kverb(1, idx);
+    x->u |= V_QNAME;
+    return x;
+}
+
+static int is_q_named_monadic(K x) {
+    return x && x->t == KV1 && (x->u & V_QNAME);
 }
 
 /* STEP4: the monadic keyword table. Maps each of q's ~20 named monadic
@@ -300,10 +313,9 @@ static void print_k(K x) {
         putchar(')');
         break;
     case KV1:
-        /* STEP4: if this verb index has a named monadic (flip, neg, ...),
-         * print the name; otherwise print glyph+colon. The node is the
-         * same KV1 either way -- the difference is purely in print. */
-        if (x->i >= 1 && x->i - 1 < (int)NMONADICS) {
+        /* STEP4: print q named-monadic spellings by name, but keep explicit
+         * glyph-colon forms such as +: and :: visible as glyph+colon. */
+        if ((x->u & V_QNAME) && x->i >= 1 && x->i - 1 < (int)NMONADICS) {
             printf("%s", MONADIC_NAMES[x->i - 1]);
         } else if (x->i >= 0 && x->i < (int)NVERBS) {
             putchar(VERB_CHARS[x->i]);
@@ -478,7 +490,7 @@ static Tokens scan(const char *src) {
              * Everything else stays a noun. */
             int midx = monadic_keyword(buf);
             if (midx >= 0) {
-                EMIT(T_VERB, kverb(1, midx));
+                EMIT(T_VERB, kverb_qname(midx));
                 noun_pos = 0;
             } else {
                 int didx = dyadic_keyword(buf);
@@ -640,7 +652,7 @@ static int sym_is(Token *tk, const char *s) {
     if (!tk->k) return 0;
     if (tk->kind == T_NOUN && tk->k->t == -KS)
         return strcmp(tk->k->s, s) == 0;
-    if (tk->kind == T_VERB && tk->k->t == KV1
+    if (tk->kind == T_VERB && is_q_named_monadic(tk->k)
         && tk->k->i >= 1 && tk->k->i - 1 < (int)NMONADICS)
         return strcmp(MONADIC_NAMES[tk->k->i - 1], s) == 0;
     if (tk->kind == T_VERB && tk->k->t == KV2
@@ -873,12 +885,14 @@ static P parse_e_from(Parser *p, P t, QCtx ctx) {
      * named dyad (KV2), or an adverb-derived verb (KL) -- so this catches
      * f', {x+y}', (E)' just like +, %, &.
      *
-     * STEP4: a named monadic (KV1) has no dyadic form, so it is NOT an
-     * infix here. `f til 10` is not `til[f;10]`; it is `f` applied to
-     * `(til 10)` -- a te with f as head. We fall through to the te branch
-     * below, which parses `til 10` as the right operand. Adverb-derived
-     * verbs are KL (variadic), not KV1, so `1 +/ 2 3` still infixes. */
-    if (t.role == R_NOUN && u.role == R_VERB && !(u.v && u.v->t == KV1)) {
+     * STEP4: a named monadic has no dyadic form, so it is NOT an infix
+     * here. `f til 10` is not `til[f;10]`; it is `f` applied to `(til 10)`
+     * -- a te with f as head. Explicit glyph-colon forms (`+:`, `::`, ...)
+     * are still ordinary verb terms in this syntactic slot, even though they
+     * are also KV1; only q named-monadic provenance excludes the nve branch.
+     * Adverb-derived verbs are KL (variadic), not KV1, so `1 +/ 2 3` still
+     * infixes. */
+    if (t.role == R_NOUN && u.role == R_VERB && !is_q_named_monadic(u.v)) {
         P e = parse_e(p, ctx);
         K w = ktn(KL, 3);
         kK(w)[0] = u.v;
@@ -967,7 +981,7 @@ static K mkdict(K names, K vals) {
 
 static K mkflip(K dict) {
     K f = ktn(KL, 2);
-    kK(f)[0] = kverb(1, verb_index('+'));   /* monadic + (flip) */
+    kK(f)[0] = kverb_qname(verb_index('+'));   /* monadic + (flip) */
     kK(f)[1] = dict;
     return f;
 }

@@ -101,9 +101,11 @@ glyph  dyadic         monadic (named)
   .    apply          get
 ```
 
-For a parser this is a gift: a glyph is unambiguously the dyadic verb
-(`KV2`), and a keyword is the named monadic verb (`KV1`), so there is far
-less to work out at parse time than in K.
+For a parser this is a gift: a bare glyph is unambiguously the dyadic
+verb (`KV2`), and a keyword is the named monadic verb (`KV1`). Explicit
+glyph-colon forms such as `+:` and `::` are still `KV1` verb terms, so the
+parser also keeps one provenance bit saying whether a `KV1` came from a q
+named keyword or from glyph-colon syntax.
 
 ## The grammar change
 
@@ -137,14 +139,12 @@ q keywords the right way**, as long as the lexer tags them as verbs:
 
 That's mostly the same role-based decision `parse_e` already makes (branch
 on `R_NOUN`/`R_VERB`). The one thing q adds is that the infix choice must
-now consult *arity*: a monadic keyword can't be a dyadic infix, so the nve
-branch fires only for a dyadic verb. But this is cheap precisely because
-of the naming convention — arity is a property of the token (`KV1` vs
-`KV2`), read directly, not inferred from position as K's demotion does.
-Full rank (does monadic `til` accept *this* value?) still stays an
-evaluation-time concern, consistent with the "verbs are arity-agnostic"
-design note in [`README.md`](README.md); the parser only needs the
-monadic-vs-dyadic bit, and the token already carries it.
+now consult source provenance: a named monadic keyword can't be claimed as
+an infix verb, but an explicit glyph-colon verb such as `+:` can. This is
+cheap because the scanner sets a bit on keyword-origin `KV1` nodes. Full
+rank (does monadic `til` accept *this* value?) still stays an evaluation-time
+concern, consistent with the "verbs are arity-agnostic" design note in
+[`README.md`](README.md).
 
 ## The code diff
 
@@ -178,7 +178,7 @@ everything else stays a `-KS` noun as before:
 ```c
 int midx = monadic_keyword(buf);     /* -1 if not a monadic keyword */
 if (midx >= 0) {
-    EMIT(T_VERB, kverb(1, midx));    /* KV1, same node K's demotion would build */
+    EMIT(T_VERB, kverb_qname(midx)); /* KV1 plus named-keyword provenance */
     noun_pos = 0;
 } else {
     int didx = dyadic_keyword(buf);  /* -1 if not a dyadic keyword */
@@ -192,9 +192,11 @@ if (midx >= 0) {
 }
 ```
 
-The monadic node is identical to what K's demotion would have produced —
-same `KV1` type, same `VERB_CHARS` index in `i`. No new type code, no new
-storage. The only difference is the printer renders it by name (see §3).
+The monadic node keeps the same `KV1` type and same `VERB_CHARS` index in
+`i`; the existing unused `u` byte stores the spelling provenance. No new
+type code is needed. The parser uses that bit to distinguish keyword
+monadics from explicit glyph-colon forms, and the printer uses it to render
+keyword spellings by name (see §3).
 
 Each table is a flat `strcmp` loop. The monadic table uses the same
 `VERB_CHARS` indices kparser already defines (`flip`→`+`, `neg`→`-`,
@@ -240,26 +242,28 @@ and stricter (a dyadic glyph in monadic position is caught at parse time,
 not eval).
 
 That handles a *dyadic* glyph in *monadic* position. The mirror case is a
-*monadic* keyword in *dyadic* position, and it lives in the nve branch of
-the same function. In K every `noun verb rest` is an infix `nve`, because
-any glyph can be dyadic. In q a named monadic (`KV1`) has no dyadic form,
-so it must not be claimed as an infix — the nve branch simply skips it:
+*named monadic keyword* in infix position, and it lives in the nve branch of
+the same function. In K every `noun verb rest` is an infix `nve`. In q a
+named monadic such as `til` or `flip` must not be claimed as an infix, while
+an explicit glyph-colon `KV1` such as `+:` or `::` still may be. The nve
+branch therefore skips only nodes with named-keyword provenance:
 
 ```c
-/* nve fires only for a DYADIC verb-term (KV2 glyph/dyad, or an
- * adverb-derived KL). A bare KV1 has no dyadic form, so fall through. */
-if (t.role == R_NOUN && u.role == R_VERB && !(u.v && u.v->t == KV1)) {
+/* nve fires for ordinary verb terms, but not q named monadic keywords.
+ * Explicit glyph-colon KV1 forms keep infix/update behavior. */
+if (t.role == R_NOUN && u.role == R_VERB && !is_q_named_monadic(u.v)) {
     ...   /* build the 3-element infix (u; t; rest) */
 }
 ```
 
-Skipping the branch lets the `KV1` fall through to `te`, where it heads its
-own application. So `f til 10` is *not* `til[f;10]`; it is `f` applied to
-`(til 10)` — `` (`f;(til;10)) `` — and `5 til 10` is `(5;(til;10))`. Adverb-
-derived verbs are `KL` (variadic), not `KV1`, so `1 +/ 2 3` and
-`1 count/ 2 3` still infix. Between them, the two checks are the whole
-parser-side diff: reject a `KV2` in monadic position, and don't infix a
-`KV1`. Both fall straight out of "arity is read from the token."
+Skipping the branch lets the named monadic fall through to `te`, where it
+heads its own application. So `f til 10` is *not* `til[f;10]`; it is `f`
+applied to `(til 10)` — `` (`f;(til;10)) `` — and `5 til 10` is
+`(5;(til;10))`. Explicit glyph-colon forms still infix: `f +: x` becomes
+`` (+:;`f;`x) ``. Adverb-derived verbs are `KL` (variadic), not provenance-
+marked `KV1`, so `1 +/ 2 3` and `1 count/ 2 3` still infix. Between them,
+the two checks are the parser-side diff: reject a `KV2` in monadic position,
+and don't infix a q named monadic keyword.
 
 ### 3. Printer: render named monadics by name
 
@@ -277,15 +281,15 @@ case KV1: case KV2:
 (`kparser.c`, `print_k`.)
 
 For q's named monadics this is wrong — `count` should print as `count`,
-not `#:`. But the `KV1` node is the same in both cases (same type, same
-index); the difference is purely in print. The printer splits the `KV1`
-and `KV2` cases: a `KV1` with a name in `MONADIC_NAMES` prints the name,
+not `#:`. But explicit glyph-colon source like `+:` should remain visible
+as glyph+colon. The printer splits the `KV1` and `KV2` cases: a `KV1` with
+named-keyword provenance and a name in `MONADIC_NAMES` prints the name,
 otherwise glyph+colon; a `KV2` whose index is in the dyadic range prints
 its `DYADIC_NAMES` entry, otherwise the bare glyph:
 
 ```c
 case KV1:
-    if (x->i >= 1 && x->i - 1 < (int)NMONADICS)
+    if ((x->u & V_QNAME) && x->i >= 1 && x->i - 1 < (int)NMONADICS)
         printf("%s", MONADIC_NAMES[x->i - 1]);
     else { putchar(VERB_CHARS[x->i]); putchar(':'); }
     break;
@@ -295,10 +299,9 @@ case KV2:
     break;
 ```
 
-No new type code, no new storage on the K node — the name is looked up
-from the index at print time. The same `KV1` node that K's demotion
-would have built is rendered differently because the name table exists,
-and a named dyad is just a `KV2` whose index falls past the glyphs.
+No new type code is needed — the existing `u` byte carries the provenance
+bit, and the name is looked up from the index at print time. A named dyad is
+just a `KV2` whose index falls past the glyphs.
 
 ## What changes at the parse tree
 
@@ -314,6 +317,7 @@ structure in both languages, just a different head rendering.
 | `2+1` | `(+;2;1)` | `(+;2;1)` |
 | `til 10` | `(`til;10)`¹ | `(til;10)` |
 | `5 til 10` | `(5;(`til;10))`¹ | `(5;(til;10))` |
+| `f +: x` | `(+:;`f;`x)` | `(+:;`f;`x)` |
 | `2+/til 10` | `((`/;+);2;(`til;10))`¹ | `((`/;+);2;(til;10))` |
 
 ¹ In K, `til` is an ordinary name (noun); `til 10` is juxtaposition `te`
@@ -327,12 +331,12 @@ than `` `til `` (a sym atom).
 no left operand for dyadic add. The user writes `flip 1` instead.
 
 The `5 til 10` row is where the nve check earns its keep. `til` is a `KV1`
-verb, but K's rule "noun, verb, rest → infix" would wrongly build
-`(til;5;10)` — a two-argument application of a one-argument verb. The nve
-check excludes `KV1`, so the verb falls through to `te`: `til` heads its
-own application `(til 10)`, and the leading `5` applies to that. This
-matches K, where `til` is a plain noun and `5 til 10` is likewise
-`5` applied to `(til 10)` — same shape, only the head prints differently.
+verb with named-keyword provenance, but K's rule "noun, verb, rest → infix"
+would wrongly build `(til;5;10)` — a two-argument application of a
+one-argument verb. The nve check excludes that provenance, so the verb falls
+through to `te`: `til` heads its own application `(til 10)`, and the leading
+`5` applies to that. Explicit glyph-colon `KV1` terms such as `+:` do not
+carry that provenance, so they still take the nve branch.
 
 The `2+/til 10` row is worth noting: it works in *both* K and q, because
 the `2` gives `+` a left operand, making `+/` dyadic-over (fold with

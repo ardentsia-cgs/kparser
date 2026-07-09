@@ -30,10 +30,12 @@
  *
  * STEP 4 (q): inherited from qparser.c (itself ksqlparser.c plus a tiny q
  * layer). q gives each monadic verb its own name (flip, neg, count, ...), so
- * a glyph is always dyadic (KV2) and a named monadic scans as a KV1 verb
- * directly from the keyword table. The parser's demotion block (which
- * inferred monadic arity from position) is replaced with a hard error: a
- * dyadic glyph in monadic position is rejected, not demoted. That is the
+ * a bare glyph is dyadic (KV2) and a named monadic scans as a KV1 verb
+ * directly from the keyword table. Explicit glyph-colon forms such as +: are
+ * also KV1, so the scanner stores one provenance bit to distinguish them from
+ * named keywords. The parser's demotion block (which inferred monadic arity
+ * from position) is replaced with a hard error: a dyadic glyph in monadic
+ * position is rejected, not demoted. That is the
  * entire diff: q's naming convention *removes* parser logic rather than
  * adding it. See QPARSER.md.
  *
@@ -203,10 +205,22 @@ static int verb_index(char c) {
     return p ? (int)(p - VERB_CHARS) : -1;
 }
 
+#define V_QNAME 1   /* q named-monadic spelling (flip, neg, count, ...). */
+
 static K kverb(int monadic, int idx) {
     K x = ka(monadic ? KV1 : KV2);
     x->i = idx;
     return x;
+}
+
+static K kverb_qname(int idx) {
+    K x = kverb(1, idx);
+    x->u |= V_QNAME;
+    return x;
+}
+
+static int is_q_named_monadic(K x) {
+    return x && x->t == KV1 && (x->u & V_QNAME);
 }
 
 /* STEP4: the monadic keyword table. Maps each of q's ~20 named monadic
@@ -317,8 +331,9 @@ static void print_k(K x) {
         putchar(')');
         break;
     case KV1:
-        /* STEP5: in q mode, render by name; in K mode, always glyph+colon. */
-        if (parser_mode == M_Q && x->i >= 1 && x->i - 1 < (int)NMONADICS) {
+        /* STEP5: in q mode, render q named-monadic spellings by name; in K
+         * mode, and for explicit glyph-colon forms, render glyph+colon. */
+        if (parser_mode == M_Q && (x->u & V_QNAME) && x->i >= 1 && x->i - 1 < (int)NMONADICS) {
             printf("%s", MONADIC_NAMES[x->i - 1]);
         } else if (x->i >= 0 && x->i < (int)NVERBS) {
             putchar(VERB_CHARS[x->i]);
@@ -492,7 +507,7 @@ static Tokens scan(const char *src, Mode mode) {
             if (mode == M_Q) {
                 int midx = monadic_keyword(buf);
                 if (midx >= 0) {
-                    EMIT(T_VERB, kverb(1, midx));
+                    EMIT(T_VERB, kverb_qname(midx));
                     noun_pos = 0;
                 } else {
                     int didx = dyadic_keyword(buf);
@@ -658,7 +673,7 @@ static int sym_is(Token *tk, const char *s) {
     if (!tk->k) return 0;
     if (tk->kind == T_NOUN && tk->k->t == -KS)
         return strcmp(tk->k->s, s) == 0;
-    if (tk->kind == T_VERB && tk->k->t == KV1
+    if (tk->kind == T_VERB && is_q_named_monadic(tk->k)
         && tk->k->i >= 1 && tk->k->i - 1 < (int)NMONADICS)
         return strcmp(MONADIC_NAMES[tk->k->i - 1], s) == 0;
     if (tk->kind == T_VERB && tk->k->t == KV2
@@ -890,15 +905,16 @@ static P parse_e_from(Parser *p, P t, QCtx ctx) {
      * parse_term produced -- a primitive (KV2), a named dyad (KV2), or an
      * adverb-derived verb (KL) -- so this catches f', {x+y}', (E)'.
      *
-     * STEP5: in q mode a named monadic (KV1) has no dyadic form, so it is
-     * NOT an infix here: `f til 10` is `f` applied to `(til 10)`, a te with
-     * f as head, not `til[f;10]`. We exclude KV1 from the nve branch and
-     * let it fall through to te. In K mode this exclusion is off, so an
-     * explicit KV1 infix (5 +: 10 -> (+:;5;10)) stays byte-identical to
-     * Step 1. Adverb-derived verbs are KL (variadic), not KV1, so
-     * `1 +/ 2 3` still infixes in both modes. */
+     * STEP5: in q mode a named monadic has no dyadic form, so it is NOT an
+     * infix here: `f til 10` is `f` applied to `(til 10)`, a te with f as
+     * head, not `til[f;10]`. Explicit glyph-colon forms (`+:`, `::`, ...)
+     * are still ordinary verb terms in this syntactic slot, even though they
+     * are also KV1; only q named-monadic provenance excludes the nve branch.
+     * In K mode the named-monadic scanner path is off, so Step 1 behavior is
+     * preserved. Adverb-derived verbs are KL (variadic), not KV1, so `1 +/ 2
+     * 3` still infixes in both modes. */
     if (t.role == R_NOUN && u.role == R_VERB
-        && !(parser_mode == M_Q && u.v && u.v->t == KV1)) {
+        && !(parser_mode == M_Q && is_q_named_monadic(u.v))) {
         P e = parse_e(p, ctx);
         K w = ktn(KL, 3);
         kK(w)[0] = u.v;
@@ -987,7 +1003,7 @@ static K mkdict(K names, K vals) {
 
 static K mkflip(K dict) {
     K f = ktn(KL, 2);
-    kK(f)[0] = kverb(1, verb_index('+'));   /* monadic + (flip) */
+    kK(f)[0] = kverb_qname(verb_index('+'));   /* monadic + (flip) */
     kK(f)[1] = dict;
     return f;
 }
