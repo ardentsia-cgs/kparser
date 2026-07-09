@@ -130,7 +130,7 @@ Three spots, each small and localized. The `nve`/`te` role machinery, the
 `parse_term` adverb loop, `parse_base`, `parse_E`, the K types, the
 ref-counting, the ksql layer — all untouched.
 
-### 1. Scanner: a small keyword table
+### 1. Scanner: small keyword tables
 
 Today every alphanumeric token becomes a noun (`-KS`):
 
@@ -145,30 +145,40 @@ else if (cl & CL_ALPHA) {
 
 (`kparser.c`, the `CL_ALPHA` branch of `scan`.)
 
-q needs a table mapping the ~20 monadic names to their `VERB_CHARS` index.
-After scanning a name, look it up; if it's a monadic keyword, emit a
-`T_VERB` with `KV1` instead of a `T_NOUN`:
+q needs two tables: one mapping the ~20 monadic names to their `VERB_CHARS`
+index (`KV1`), and a small one mapping a handful of named dyads (`lj`,
+`bin`, …) to `KV2` verb indices. After scanning a name, look it up; a
+monadic keyword emits a `KV1` verb, a dyadic keyword a `KV2` verb, and
+everything else stays a `-KS` noun as before:
 
 ```c
-int idx = monadic_keyword(buf);      /* -1 if not a monadic keyword */
-if (idx >= 0) {
-    EMIT(T_VERB, kverb(1, idx));     /* KV1, same node K's demotion would build */
+int midx = monadic_keyword(buf);     /* -1 if not a monadic keyword */
+if (midx >= 0) {
+    EMIT(T_VERB, kverb(1, midx));    /* KV1, same node K's demotion would build */
     noun_pos = 0;
 } else {
-    EMIT(T_NOUN, ks(buf));           /* ordinary name, as before */
-    noun_pos = 1;
+    int didx = dyadic_keyword(buf);  /* -1 if not a dyadic keyword */
+    if (didx >= 0) {
+        EMIT(T_VERB, kverb(0, didx)); /* KV2, a named dyadic verb */
+        noun_pos = 0;
+    } else {
+        EMIT(T_NOUN, ks(buf));       /* ordinary name, as before */
+        noun_pos = 1;
+    }
 }
 ```
 
-The node is identical to what K's demotion would have produced — same
-`KV1` type, same `VERB_CHARS` index in `i`. No new type code, no new
+The monadic node is identical to what K's demotion would have produced —
+same `KV1` type, same `VERB_CHARS` index in `i`. No new type code, no new
 storage. The only difference is the printer renders it by name (see §3).
 
-The table is a flat `strcmp` loop — `flip`→`+`, `neg`→`-`, `til`→`!`,
-`where`→`&`, … — using the same `VERB_CHARS` indices kparser already
-defines. ~20 entries, not the ~170 of q's full dictionary; only the
-monadic verb names need this, because only they affect the parser's arity
-logic.
+Each table is a flat `strcmp` loop. The monadic table uses the same
+`VERB_CHARS` indices kparser already defines (`flip`→`+`, `neg`→`-`,
+`til`→`!`, `where`→`&`, …), ~20 entries; the dyadic table (`lj`, `bin`,
+`wavg`, `xbar`, `asof`, `cross`) uses indices starting at `NVERBS` so they
+don't collide with the glyphs. Both are a tiny slice of q's ~170-entry
+dictionary; the rest are ordinary names that need no lexer recognition,
+because only verbs affect the parser's role/arity logic.
 
 ### 2. Parser: the demotion block becomes a hard error
 
@@ -222,9 +232,10 @@ case KV1: case KV2:
 
 For q's named monadics this is wrong — `count` should print as `count`,
 not `#:`. But the `KV1` node is the same in both cases (same type, same
-index); the difference is purely in print. The printer looks up the
-index in the `MONADIC_NAMES` table: if it has a name, print the name;
-otherwise print glyph+colon:
+index); the difference is purely in print. The printer splits the `KV1`
+and `KV2` cases: a `KV1` with a name in `MONADIC_NAMES` prints the name,
+otherwise glyph+colon; a `KV2` whose index is in the dyadic range prints
+its `DYADIC_NAMES` entry, otherwise the bare glyph:
 
 ```c
 case KV1:
@@ -232,11 +243,16 @@ case KV1:
         printf("%s", MONADIC_NAMES[x->i - 1]);
     else { putchar(VERB_CHARS[x->i]); putchar(':'); }
     break;
+case KV2:
+    if (x->i < (int)NVERBS) putchar(VERB_CHARS[x->i]);
+    else printf("%s", DYADIC_NAMES[x->i - (int)NVERBS]);
+    break;
 ```
 
 No new type code, no new storage on the K node — the name is looked up
 from the index at print time. The same `KV1` node that K's demotion
-would have built is rendered differently because the name table exists.
+would have built is rendered differently because the name table exists,
+and a named dyad is just a `KV2` whose index falls past the glyphs.
 
 ## What changes at the parse tree
 
