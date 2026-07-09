@@ -99,18 +99,26 @@ less to work out at parse time than in K.
 
 ## The grammar change
 
-One production gains one alternative:
+There isn't one. The five productions are untouched:
 
 ```
 E : E ; e | e
 e : nve | te | empty
 t : n | v
-v : tA | V | K        // K = named keyword verb (flip, count, lj, bin, …)
+v : tA | V
 n : t[E] | (E) | {E} | N
 ```
 
-`K` is a keyword operator — a name the scanner tags as a verb (`KV1` or
-`KV2`) rather than a `-KS` noun. Everything else stays.
+What changes is the *terminal* `V` — the set of tokens the scanner
+recognizes as a verb. In K, `V` is exactly the primitive glyphs
+(`+ - * % …`, optionally with a trailing `:`), and every name (`flip`,
+`count`, `lj`) lexes as a noun `N`. In q, the scanner also tags a fixed
+set of names as verbs: the ~20 named monadics as `KV1` and a handful of
+named dyads as `KV2`. So a q keyword verb enters the grammar through the
+same `v : … | V` slot a glyph does — the parser never learns a new rule,
+it just sees more tokens in the `V` class. This is a lexer change, not a
+grammar one: `parse_base` returns `R_VERB` for a `T_VERB` token regardless
+of whether it came from a glyph or a keyword.
 
 And here's the payoff: **the existing `nve`/`te` machinery already absorbs
 q keywords for free**, as long as the lexer tags them as verbs:
