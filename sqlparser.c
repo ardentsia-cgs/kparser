@@ -62,7 +62,7 @@
  * one printer; only the scanner and the top-level parser branch on it. */
 typedef enum { M_KSQL, M_SQL } Mode;
 
-static void die(const char *msg) {
+static _Noreturn void die(const char *msg) {
     fprintf(stderr, "kparser: %s\n", msg);
     exit(1);
 }

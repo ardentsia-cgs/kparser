@@ -42,7 +42,7 @@
                          * or exprs separated by ';' inside one (E) clause */
 #define MAX_NAME  256   /* max bytes in a single name token */
 
-static void die(const char *msg) {
+static _Noreturn void die(const char *msg) {
     fprintf(stderr, "kparser: %s\n", msg);
     exit(1);
 }
