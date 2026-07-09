@@ -16,7 +16,15 @@ SRC2 := ksqlparser.c
 BIN3 := sqlparser
 SRC3 := sqlparser.c
 
-all: $(BIN) $(BIN2) $(BIN3)
+# STEP 4: the q build (ksqlparser.c + a named-monadics layer).
+BIN4 := qparser
+SRC4 := qparser.c
+
+# STEP 5: the universal parser (qparser.c + a K/q mode switch).
+BIN5 := uparser
+SRC5 := uparser.c
+
+all: $(BIN) $(BIN2) $(BIN3) $(BIN4) $(BIN5)
 
 $(BIN): $(SRC)
 	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
@@ -25,6 +33,12 @@ $(BIN2): $(SRC2)
 	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
 
 $(BIN3): $(SRC3)
+	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
+
+$(BIN4): $(SRC4)
+	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
+
+$(BIN5): $(SRC5)
 	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
 
 # Stricter warnings — useful while editing the parser.
@@ -49,6 +63,14 @@ run2: $(BIN2)
 run3: $(BIN3)
 	./$(BIN3) --sql
 
+# STEP 4: the q REPL (named monadics; glyphs are always dyadic).
+run4: $(BIN4)
+	./$(BIN4)
+
+# STEP 5: the universal REPL (default q, \k toggles to K).
+run5: $(BIN5)
+	./$(BIN5)
+
 # Golden tests: every route through the scanner, parser, and printer.
 test: $(BIN)
 	tests/run.sh ./$(BIN)
@@ -67,6 +89,21 @@ test3: $(BIN3)
 	tests/run.sh ./$(BIN3) tests/ksql_cases.tsv
 	tests/run.sh ./$(BIN3) tests/sql_cases.tsv --sql
 
+# STEP 4 tests: the q binary passes the q-specific cases. It does NOT pass
+# the STEP 1/2 suites unchanged, because q's named monadics change the AST
+# for glyph-in-monadic-position cases (the demotion is gone). The q cases
+# document those differences explicitly.
+test4: $(BIN4)
+	tests/run.sh ./$(BIN4) tests/q_cases.tsv
+
+# STEP 5 tests: in its default (q) mode the universal parser must pass the
+# STEP 4 q cases (proving it's a superset).  In K mode (\k entered before
+# each line) it passes the STEP 1 and STEP 2 suites unchanged.
+test5: $(BIN5)
+	tests/run.sh ./$(BIN5) tests/q_cases.tsv
+	tests/run_k.sh ./$(BIN5)
+	tests/run_k.sh ./$(BIN5) tests/ksql_cases.tsv
+
 # Coverage build + line/branch report (requires gcov). Compiles in two
 # steps so the gcov data files are named after kparser.c on every toolchain,
 # drives the parser with the golden suite, then summarizes coverage.
@@ -78,6 +115,6 @@ coverage: clean
 	@rm -f kparser.o
 
 clean:
-	rm -f $(BIN) $(BIN2) $(BIN3) kparser.o *.gcda *.gcno *.gcov
+	rm -f $(BIN) $(BIN2) $(BIN3) $(BIN4) $(BIN5) kparser.o *.gcda *.gcno *.gcov
 
-.PHONY: all strict debug run run2 run3 test test2 test3 coverage clean
+.PHONY: all strict debug run run2 run3 run4 run5 test test2 test3 test4 test5 coverage clean

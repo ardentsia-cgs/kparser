@@ -1,0 +1,125 @@
+// Golden cases for qparser (Step 4: q named monadics). Format: <input><TAB><expected AST>.
+// Lines beginning with // are comments; blank lines are ignored.
+// Expected value @ABORT means the input must make the parser exit nonzero.
+//
+// These cases exercise the one q idea: monadic verbs are named keywords
+// (flip, neg, count, ...), not demoted glyphs. A glyph is always dyadic.
+// The parser's demotion block is gone; arity is read from the token.
+
+// ---- named monadics: each keyword scans as a KN1 verb ----
+flip 1 2 3	(flip;1 2 3)
+neg 5	(neg;5)
+first 1 2 3	(first;1 2 3)
+reciprocal 4	(reciprocal;4)
+where 1 0 1 0	(where;1 0 1 0)
+reverse 1 2 3	(reverse;1 2 3)
+iasc 3 1 2	(iasc;3 1 2)
+idesc 1 3 2	(idesc;1 3 2)
+group 1 1 0 1	(group;1 1 0 1)
+not 1 0 1	(not;1 0 1)
+til 10	(til;10)
+count 1 2 3	(count;1 2 3)
+floor 42	(floor;42)
+enlist 1 2 3	(enlist;1 2 3)
+null 1 2 3	(null;1 2 3)
+string 42	(string;42)
+distinct 1 2 2 3	(distinct;1 2 2 3)
+type 42	(type;42)
+get `a	(get;,`a)
+
+// ---- glyphs are always dyadic: no demotion in monadic position ----
+// In K, +1 demotes to (+:;1). In q, + is dyadic and there is no demotion,
+// so +1 is a parse error: the user must write flip 1.
++1	@ABORT
+- 3	@ABORT
+*5	@ABORT
+!5	@ABORT
+#1 2 3	@ABORT
+|1 2 3	@ABORT
+~0	@ABORT
+,1	@ABORT
+
+// ---- dyadic glyph use is unchanged: nve works as before ----
+2+3	(+;2;3)
+2-3	(-;2;3)
+2*3	(*;2;3)
+2!3	(!;2;3)
+1 2 3,4 5 6	(,;1 2 3;4 5 6)
+
+// ---- named monadic in nve (infix) position: not applicable ----
+// named monadics are monadic only; they can't appear as dyadic infix.
+// But a named monadic can be the right operand of a dyadic:
+2+count 1 2 3	(+;2;(count;1 2 3))
+
+// ---- dyadic keywords: same nve machinery as glyph infix ----
+t lj u	(lj;`t;`u)
+3 bin 1 2 3	(bin;3;1 2 3)
+1 2 3 wavg 4 5 6	(wavg;1 2 3;4 5 6)
+select from t cross u where a=1	(`select;(cross;`t;`u);((=;`a;1));();())
+
+// ---- adverbs work on both glyphs and named monadics ----
++/	(`/;+)
++/\	(`\;(`/;+))
+flip'	(`';flip)
+count/	(`/;count)
++/[til 10]	((`/;+);(til;10))
+2+/til 10	((`/;+);2;(til;10))
+count/[1 2 3]	((`/;count);1 2 3)
+
+// ---- the canonical q-vs-K difference: +1 ----
+// K:  +1  ->  (+:;1)     [demoted]
+// q:  +1  ->  (+;1)     [no demotion; dyadic glyph, one arg]
+// The parser builds the shape; eval catches the arity mismatch.
+
+// ---- ksql still works: where is both a clause keyword and a monadic verb ----
+select a from t where d>0	(`select;`t;((>;`d;0));();(`a))
+select a,b by c from t where d>0	(`select;`t;((>;`d;0));(`c);(`a;`b))
+count select a from t	(count;(`select;`t;();();(`a)))
+select from t	(`select;`t;();();())
+
+// ---- clause keywords are content inside their own clause (q verb, not name) ----
+select from t where where 1 2 3	(`select;`t;((where;1 2 3));();())
+select from t where d,where 1 2 3	(`select;`t;(`d;(where;1 2 3));();())
+select a from from t	(`select;(`from;`t);();();(`a))
+
+// ---- out-of-order clause keywords are still errors ----
+select where 1	@ABORT
+select from where	@ABORT
+select x where	@ABORT
+select a from t where b by c	@ABORT
+
+// ---- ordinary names still parse as nouns (not keywords) ----
+x	`x
+foo	`foo
+sum	`sum
+avg	`avg
+
+// ---- dyadic keywords (lj, bin, ...) are KV2 verbs, not nouns ----
+lj	lj
+bin	bin
+
+// ---- projections: elided slots still become :: ----
++[2;]	(+;2;::)
+f[;2]	(`f;::;2)
+f[]	(`f;::)
+
+// ---- lambdas, parens, sequencing: unchanged from K ----
+{x+y}	(`{;(+;`x;`y))
+{a;b}	(`{;(`;;`a;`b))
+(1;2;3)	(1;2;3)
+1;2;3	(`;;1;2;3)
+
+// ---- lambda parameter lists: 2-element KL without params, 3-element with -------
+{}	(`{;())
+{[] x}	(`{;`x)
+{[a] a+x}	(`{;(`a);(+;`a;`x))
+{[a;b] a+b}	(`{;(`a;`b);(+;`a;`b))
+{[a;b;c] a+b+c}	(`{;(`a;`b;`c);(+;`a;(+;`b;`c)))
+{[x+1] y}	@ABORT
+
+// ---- table literals: desugar to ! (dict) and flip (monadic +) ----
+([] a:1)	(flip;(!;,`a;(1)))
+([] a:1;b:2)	(flip;(!;`a`b;(1;2)))
+([] a:til 10;b:til 10)	(flip;(!;`a`b;((til;10);(til;10))))
+([k:1]v:2)	(!;(flip;(!;,`k;(1)));(flip;(!;,`v;(2))))
+([a:1;b:2]c:3;d:4)	(!;(flip;(!;`a`b;(1;2)));(flip;(!;`c`d;(3;4))))

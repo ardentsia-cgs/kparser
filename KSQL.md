@@ -132,9 +132,13 @@ The parser carries this as an explicit **parse context** threaded down the
 expression parser — a `QCtx` argument, not mutable parser state:
 
 - `Q_NONE` — ordinary K (all of Step 1): nothing terminates an expr early.
-- `Q_FROM` — the `from` table: stop at a clause keyword; `,` still joins.
-- `Q_PHRASE` — a select/by/where phrase: stop at a clause keyword **and**
-  at a top-level dyadic `,` (the phrase separator).
+- `Q_FROM` — the `from` table: one expression; `,` still joins.
+- `Q_SELECT` / `Q_BY` / `Q_WHERE` — a select/by/where phrase list:
+  comma-separated; stops at the legal following keyword for that
+  clause (by/from for select, from for by, nothing for where).
+  The clause's own keyword (e.g. `where` inside a where-phrase) is
+  content, not a stopper — so `select from t where where 1 2 3` parses
+  the second `where` as the verb applied to `1 2 3`.
 
 A thin wrapper `parse_base_q` consults the context: it ends the current
 expression (returns `EMPTY` without consuming) at a boundary, so `parse_e`
@@ -207,15 +211,22 @@ same way it leaves projection-vs-application to a valence-aware evaluator.
 
 `select`/`exec`/`update`/`delete` are treated as query verbs whenever they
 appear as a base term — so you can't use them as variable names. But
-`from`/`by`/`where` are recognized as clause keywords *only inside a query*
-(when the parse context is not `Q_NONE`); everywhere else they remain
-ordinary names:
+`from`/`by`/`where` are recognized as clause keywords *positionally*:
+when they appear at a clause boundary (where the next clause is
+expected), they act as stoppers; inside their own clause's operand,
+they are ordinary names again — so `select a from from t` uses the
+second `from` as a table name. Out-of-order keywords
+(e.g. `by` inside a where-phrase) are still errors:
 
 ```
   from:3
 (:;`from;3)
   where+1
 (+;`where;1)
+  select from t where where 1 2 3
+(`select;`t;((`where;1 2 3));();())
+  select a from t where b by c
+kparser: ksql: unexpected keyword in where phrase
 ```
 
 This keeps Step 2 a strict superset of Step 1 except for the four query

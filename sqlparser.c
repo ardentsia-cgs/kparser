@@ -517,11 +517,11 @@ static const P EMPTY = { R_NONE, NULL };
  * recurses through parse_E, which always parses at Q_NONE.
  *
  *   Q_NONE    ordinary K (all of Step 1): nothing terminates an expr early
- *   Q_FROM    the `from` table: stop at a clause keyword; ',' still joins
- *             (the table is one expression, so `from t,u` is a join)
- *   Q_PHRASE  a select/by/where phrase: stop at a clause keyword AND at a
- *             top-level dyadic ',' (the phrase separator) */
-typedef enum { Q_NONE, Q_FROM, Q_PHRASE } QCtx;
+ *   Q_SELECT  select-phrase list: comma-separated; stops at by/from
+ *   Q_BY      by-phrase list: comma-separated; stops at from; by is content
+ *   Q_FROM    the from-table: one expression; stops at where; from is content
+ *   Q_WHERE   where-phrase list: comma-separated; no stoppers; where is content */
+typedef enum { Q_NONE, Q_SELECT, Q_BY, Q_FROM, Q_WHERE } QCtx;
 
 typedef struct {
     const char *src;
@@ -550,7 +550,7 @@ static P parse_term(Parser *p, QCtx ctx);
 static P parse_base(Parser *p);              /* Step-1 core, unchanged        */
 static P parse_base_q(Parser *p, QCtx ctx);  /* STEP2: query-aware wrapper     */
 static P parse_query(Parser *p);             /* STEP2 */
-static K parse_phrase_list(Parser *p);       /* STEP2 */
+static K parse_phrase_list(Parser *p, QCtx ctx); /* STEP2: ctx = SELECT/BY/WHERE */
 
 /* STEP2: is the current token the name `s? Query keywords scan as ordinary
  * -KS name tokens; the parser recognizes them positionally by string. */
@@ -642,17 +642,43 @@ static P parse_base(Parser *p) {
 
 /* STEP2: query-aware base. parse_base itself is exactly the Step-1 core; all
  * query knowledge lives here. A query verb at base position starts a query
- * (the fourth noun base, n : ... | q). Inside a clause (ctx != Q_NONE) a
- * clause keyword ends the current expression, and inside a phrase (Q_PHRASE)
- * so does a top-level dyadic ',' -- in both cases we return EMPTY without
- * consuming, leaving the token for parse_query / parse_phrase_list. Brackets
- * need no special handling: parse_base recurses through parse_E, which parses
- * at Q_NONE, so inside ()/[]/{} commas join and keywords are plain names. */
+ * (the fourth noun base, n : ... | q). Clause keywords stop the current
+ * expression only when they are legal stoppers for this context:
+ *
+ *   Q_SELECT   stops at by / from          (by=content -> error)
+ *   Q_BY       stops at from;              by=content, where=error
+ *   Q_FROM     stops at where;             from=content, by=error
+ *   Q_WHERE    no stoppers;                where=content, by/from=error
+ *
+ * Phrase contexts (SELECT/BY/WHERE) also stop at top-level ','.
+ * Brackets need no special handling: parse_base recurses through parse_E,
+ * which always parses at Q_NONE, so inside ()/[]/{} commas join and
+ * keywords are plain names. */
 static P parse_base_q(Parser *p, QCtx ctx) {
     Token *tk = cur(p);
-    if (is_query_verb(tk))                  return parse_query(p);
-    if (ctx != Q_NONE && is_clause_kw(tk))  return EMPTY;
-    if (ctx == Q_PHRASE && is_comma(tk))    return EMPTY;
+    if (is_query_verb(tk)) return parse_query(p);
+    if (ctx != Q_NONE && is_clause_kw(tk)) {
+        int is_by = sym_is(tk, "by"), is_from = sym_is(tk, "from"),
+            is_where = sym_is(tk, "where");
+        switch (ctx) {
+        case Q_SELECT:
+            if (is_by || is_from) return EMPTY;
+            die("ksql: unexpected keyword after select (expected by or from)");
+        case Q_BY:
+            if (is_from) return EMPTY;
+            if (is_by) break;  /* own keyword: content, not stopper */
+            die("ksql: unexpected keyword in by phrase (expected from)");
+        case Q_FROM:
+            if (is_where) return EMPTY;
+            if (is_from) break;  /* own keyword: content, not stopper */
+            die("ksql: unexpected keyword after from (expected where)");
+        case Q_WHERE:
+            if (is_where) break;  /* own keyword: content, not stopper */
+            die("ksql: unexpected keyword in where phrase");
+        default: break;
+        }
+    }
+    if (ctx != Q_NONE && ctx != Q_FROM && is_comma(tk)) return EMPTY;
     return parse_base(p);
 }
 
@@ -784,18 +810,18 @@ static K emit_query(K head, K t, K c, K b, K a) {
  * the empty list (). Each phrase is an ordinary e, so an aliased phrase
  * `qty:expr` is just the (:;`qty;expr) assignment shape -- no new code.
  *
- * parse_phrase_list reads a comma-separated run of phrases. Each phrase is
- * parsed at Q_PHRASE, so parse_e stops at each top-level ',' and at the next
- * clause keyword; this function then steps over the separators. */
-static K parse_phrase_list(Parser *p) {
+ * parse_phrase_list reads a comma-separated run of phrases in the given
+ * context (Q_SELECT / Q_BY / Q_WHERE), so parse_e stops at each top-level
+ * ',' and at the legal stoppers for that context. */
+static K parse_phrase_list(Parser *p, QCtx ctx) {
     K buf[MAX_VEC]; int n = 0;
-    P first = parse_e(p, Q_PHRASE);
+    P first = parse_e(p, ctx);
     if (first.role == R_NONE) return ktn(KL, 0);   /* no phrases -> () */
     buf[n++] = first.v;
     while (is_comma(cur(p))) {
         adv(p);                                    /* step over separator */
         if (n >= MAX_VEC) die("ksql: too many phrases");
-        P f = parse_e(p, Q_PHRASE);
+        P f = parse_e(p, ctx);
         buf[n++] = f.v ? f.v : knull();            /* empty phrase -> :: */
     }
     return klist(buf, n);
@@ -816,12 +842,12 @@ static P parse_query(Parser *p) {
     K head = ks(cur(p)->k->s);   /* `select / `exec / `update / `delete */
     adv(p);
 
-    K a = parse_phrase_list(p);                  /* select / phrase list */
+    K a = parse_phrase_list(p, Q_SELECT);        /* select / phrase list */
 
     K b;
     if (sym_is(cur(p), "by")) {
         adv(p);
-        b = parse_phrase_list(p);
+        b = parse_phrase_list(p, Q_BY);
         if (b->n == 0) die("ksql: empty 'by'");
     } else b = ktn(KL, 0);
 
@@ -834,7 +860,7 @@ static P parse_query(Parser *p) {
     K c;
     if (sym_is(cur(p), "where")) {
         adv(p);
-        c = parse_phrase_list(p);
+        c = parse_phrase_list(p, Q_WHERE);
         if (c->n == 0) die("ksql: empty 'where'");
     } else c = ktn(KL, 0);
 

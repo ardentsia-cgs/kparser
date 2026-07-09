@@ -350,6 +350,33 @@ precedence-climbing expression parser. The Step 3 code lives in
 [`sqlparser.c`](sqlparser.c) (`ksqlparser.c` plus a sql layer and the mode
 switch); build it with `make sqlparser` and test it with `make test3`.
 
+## Next: q (Step 4)
+
+[`QPARSER.md`](QPARSER.md) turns to **q**, the query/analytics language
+layered on K, and isolates the one q idea that touches the *parser*:
+**naming the monadic verbs**. In K a single glyph carries two verbs at
+once (`+` is *add* between two operands but *flip* in front of one); q
+splits them, so the glyph is always the dyadic verb and each monadic
+counterpart gets its own name (`flip`, `neg`, `count`, …). The surprise
+is that this makes the parser *smaller*: the demotion block that infers a
+monadic verb from position becomes a hard error, and the existing
+`nve`/`te` machinery absorbs the named keywords for free. The Step 4 code
+lives in [`qparser.c`](qparser.c) (`ksqlparser.c` plus a named-monadics
+layer); build it with `make qparser` and test it with `make test4`.
+
+## Next: uparser (Step 5)
+
+[`UPARSER.md`](UPARSER.md) closes the circle: if K and q differ in only
+two decisions — whether `flip` is a verb, and whether a bare glyph in
+monadic position demotes or errors — can they share one parser and switch
+at runtime? Yes, and the switch is ~15 lines: three gates (scanner,
+demotion, printer) keyed off a mode flag. It starts in q mode; `\` toggles
+to K, and `k)`/`q)` prefixes parse a single line in either mode. The
+Step 5 code lives in [`uparser.c`](uparser.c) (`qparser.c` plus the mode
+plumbing); build it with `make uparser` and test it with `make test5`,
+which re-runs the Step 1 and Step 2 suites in K mode to prove it's a
+strict superset.
+
 ## Appendix: ksimple's grammar
 
 [`KSIMPLE.md`](KSIMPLE.md) goes the other direction: it reads the implicit

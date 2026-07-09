@@ -59,6 +59,19 @@ select x,y from	@ABORT
 select x by from t	@ABORT
 select x from t where	@ABORT
 
+// ---- clause keywords are content inside their own clause: where where, from from, by by ----
+select from t where where 1 2 3	(`select;`t;((`where;1 2 3));();())
+select from t where d,where 1 2 3	(`select;`t;(`d;(`where;1 2 3));();())
+select a from from t	(`select;(`from;`t);();();(`a))
+select a by by from t	(`select;`t;();(`by);(`a))
+
+// ---- out-of-order clause keywords are still errors ----
+select where 1	@ABORT
+select from where	@ABORT
+select x where	@ABORT
+select a from t where b by c	@ABORT
+select a by b,where 1 from t	@ABORT
+
 // ---- malformed: clauses out of order leave a token trailing the query ----
 select a,b from t,u by a=2	@ABORT
 select a from t by b	@ABORT

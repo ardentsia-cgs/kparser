@@ -1,6 +1,8 @@
 kparser
 ksqlparser
 sqlparser
+qparser
+uparser
 
 # build / coverage artifacts
 *.o
@@ -8,3 +10,6 @@ sqlparser
 *.gcda
 *.gcov
 *.dSYM/
+
+# macOS
+.DS_Store

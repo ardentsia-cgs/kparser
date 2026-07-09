@@ -8,6 +8,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <limits.h>
+#include <unistd.h>
 
 /* Pedagogical, minimal parser for the k grammar at
  *   https://k.miraheze.org/wiki/Grammar
@@ -25,7 +26,21 @@
  * (http://nsl.com/k/ksql.k). Aliases (qty:expr) need no special handling
  * -- they are the existing `:` assignment shape. Every addition over
  * STEP 1 is tagged STEP2 or lives in the `===== STEP 2: ksql =====`
- * block. See KSQL.md. */
+ * block. See KSQL.md.
+ *
+ * STEP 4 (q): this file is ksqlparser.c plus a tiny q layer. q gives each
+ * monadic verb its own name (flip, neg, count, ...), so a glyph is always
+ * dyadic (KV2) and a named monadic scans as a KV1 verb directly from the
+ * keyword table. The parser's demotion block (which inferred monadic arity
+ * from position) is replaced with a hard error: a dyadic glyph in monadic
+ * position is rejected, not demoted. That is the entire diff: q's naming
+ * convention *removes* parser logic rather than adding it. See QPARSER.md.
+ *
+ * STEP 5 (universal): K and q share the same parser. The only differences
+ * are (1) the scanner keyword lookup (off in K, on in q) and (2) what to do
+ * with a bare glyph in monadic position (demote in K, reject in q). A
+ * runtime Mode (\k / \q in the REPL) toggles between them, chosen before
+ * scanning.  Default is q.  See UPARSER.md. */
 
 /* Safety constants. Real K would grow these dynamically; we bound them
  * statically and abort on overflow to keep the pedagogical version short. */
@@ -37,6 +52,11 @@ static void die(const char *msg) {
     fprintf(stderr, "kparser: %s\n", msg);
     exit(1);
 }
+
+/* STEP5: runtime mode.  K and q share the same parser;
+ * the only differences are scanner keyword lookup (off in K, on in q)
+ * and demotion vs rejection for bare glyphs in monadic position. */
+typedef enum { M_K, M_Q } Mode;
 
 /* Allocation wrappers: parsers tend to malloc in tight loops; an OOM
  * three layers deep is hard to recover from cleanly. Abort instead. */
@@ -188,6 +208,75 @@ static K kverb(int monadic, int idx) {
     return x;
 }
 
+/* STEP4: the monadic keyword table. Maps each of q's ~20 named monadic
+ * verbs to its index in VERB_CHARS (the same index K's demotion would
+ * have produced). Only the monadic names need this -- they are the ones
+ * that skip the demotion. q's other keywords (sum, avg, lj, ...) are
+ * ordinary names and parse as -KS nouns.
+ *
+ * The array is indexed by VERB_CHARS position minus 1 (skipping ':',
+ * which has no named monadic -- '::' is the generic null). So
+ * MONADIC_NAMES[0] is the monadic for '+' (flip), [1] for '-' (neg), etc. */
+static const char *MONADIC_NAMES[] = {
+    "flip",     /* +  */
+    "neg",      /* -  */
+    "first",    /* *  */
+    "reciprocal",/* %  */
+    "til",      /* !  */
+    "where",    /* &  */
+    "reverse",  /* |  */
+    "iasc",     /* <  */
+    "idesc",    /* >  */
+    "group",    /* =  */
+    "not",      /* ~  */
+    "enlist",   /* ,  */
+    "null",     /* ^  */
+    "count",    /* #  */
+    "floor",    /* _  */
+    "string",   /* $  */
+    "distinct", /* ?  */
+    "type",     /* @  */
+    "get"       /* .  */
+};
+#define NMONADICS (sizeof(MONADIC_NAMES) / sizeof(MONADIC_NAMES[0]))
+
+/* STEP4: is `name` a monadic keyword? If so, return its VERB_CHARS index;
+ * otherwise return -1. The index is the position of the glyph in
+ * VERB_CHARS, which is the same index K's demotion block would have used
+ * to build the KV1 -- so the AST node is identical (KV1 with that index),
+ * only the printer renders it by name. */
+static int monadic_keyword(const char *name) {
+    for (int i = 0; i < (int)NMONADICS; i++) {
+        if (strcmp(name, MONADIC_NAMES[i]) == 0)
+            return i + 1;   /* +1 to skip ':' at VERB_CHARS[0] */
+    }
+    return -1;
+}
+
+/* STEP4: dyadic keyword table. In real q, lj, bin, wavg etc. are library
+ * functions defined in the .q context, not parser primitives.  We include a
+ * small representative set to demonstrate that the same nve machinery that
+ * handles glyph infix also handles named dyadic verbs — the only difference
+ * is the scanner tag.  Indices start at NVERBS so they don't collide with
+ * glyph indices; the printer resolves name-vs-glyph by which range i falls
+ * in. */
+static const char *DYADIC_NAMES[] = {
+    "lj",
+    "bin",
+    "wavg",
+    "xbar",
+    "asof",
+    "cross",
+};
+#define NDYADICS (sizeof(DYADIC_NAMES) / sizeof(DYADIC_NAMES[0]))
+
+static int dyadic_keyword(const char *name) {
+    for (int i = 0; i < (int)NDYADICS; i++)
+        if (strcmp(name, DYADIC_NAMES[i]) == 0)
+            return (int)NVERBS + i;
+    return -1;
+}
+
 /* Generic null `::` -- K's identity value, and the marker for an elided
  * argument in a projection (f[;2] -> (`f;::;2), 2+ -> (+;2;::)). It is the
  * monadic colon (KV1, index 0), which print_k renders as "::". K has no
@@ -195,6 +284,11 @@ static K kverb(int monadic, int idx) {
 static K knull(void) { return kverb(1, 0); }
 
 static const char *ADVERB_NAMES[] = { "'", "/", "\\", "':", "/:", "\\:" };
+
+/* STEP5: the active mode, set at the start of run().  The printer and
+ * the demotion check in parse_e_from reference it without threading
+ * through every function signature. */
+static Mode parser_mode;
 
 /* ===== lisp-style printer ===== */
 static void print_k(K x) {
@@ -221,10 +315,22 @@ static void print_k(K x) {
         }
         putchar(')');
         break;
-    case KV1: case KV2:
+    case KV1:
+        /* STEP5: in q mode, render by name; in K mode, always glyph+colon. */
+        if (parser_mode == M_Q && x->i >= 1 && x->i - 1 < (int)NMONADICS) {
+            printf("%s", MONADIC_NAMES[x->i - 1]);
+        } else if (x->i >= 0 && x->i < (int)NVERBS) {
+            putchar(VERB_CHARS[x->i]);
+            putchar(':');
+        } else {
+            printf("?[t=%d,i=%d]", x->t, x->i);
+        }
+        break;
+    case KV2:
         if (x->i >= 0 && x->i < (int)NVERBS) {
             putchar(VERB_CHARS[x->i]);
-            if (x->t == KV1) putchar(':');
+        } else if (parser_mode == M_Q && x->i >= (int)NVERBS && x->i - (int)NVERBS < (int)NDYADICS) {
+            printf("%s", DYADIC_NAMES[x->i - (int)NVERBS]);
         } else {
             printf("?[t=%d,i=%d]", x->t, x->i);
         }
@@ -319,7 +425,7 @@ static I scan_int(const char *src, int *p) {
     return (I)(neg ? -n : n);
 }
 
-static Tokens scan(const char *src) {
+static Tokens scan(const char *src, Mode mode) {
     Token *toks = NULL;
     int n = 0, cap = 0;
     int p = 0;
@@ -379,8 +485,28 @@ static Tokens scan(const char *src) {
             char buf[MAX_NAME];
             memcpy(buf, src + start, (size_t)len);
             buf[len] = '\0';
-            EMIT(T_NOUN, ks(buf));
-            noun_pos = 1;
+            /* STEP4/5: in q mode, monadic and dyadic keyword names scan as
+             * verbs; in K mode they are ordinary nouns.  This is the only
+             * scanner gate between the two modes. */
+            if (mode == M_Q) {
+                int midx = monadic_keyword(buf);
+                if (midx >= 0) {
+                    EMIT(T_VERB, kverb(1, midx));
+                    noun_pos = 0;
+                } else {
+                    int didx = dyadic_keyword(buf);
+                    if (didx >= 0) {
+                        EMIT(T_VERB, kverb(0, didx));
+                        noun_pos = 0;
+                    } else {
+                        goto ordinary_name;
+                    }
+                }
+            } else {
+              ordinary_name:
+                EMIT(T_NOUN, ks(buf));
+                noun_pos = 1;
+            }
         }
         else if (c == '`') {
             /* Build sym vector directly: xstrdup each name once, hand
@@ -520,11 +646,24 @@ static P parse_base(Parser *p);              /* Step-1 core, unchanged        */
 static P parse_base_q(Parser *p, QCtx ctx);  /* STEP2: query-aware wrapper     */
 static P parse_query(Parser *p);             /* STEP2 */
 static K parse_phrase_list(Parser *p, QCtx ctx); /* STEP2: ctx = SELECT/BY/WHERE */
+static K parse_table(Parser *p);             /* STEP4: ([]col;...) / ([keys]cols;...) */
 
-/* STEP2: is the current token the name `s? Query keywords scan as ordinary
- * -KS name tokens; the parser recognizes them positionally by string. */
+/* STEP2: is the current token the name `s? Query keywords scan as -KS
+ * name tokens; the parser recognizes them positionally by string.
+ * STEP4: a monadic keyword (where, count, ...) scans as a KV1 verb, and a
+ * dyadic keyword (lj, bin, ...) as a KV2 verb, so sym_is must also match
+ * both. */
 static int sym_is(Token *tk, const char *s) {
-    return tk->kind == T_NOUN && tk->k && tk->k->t == -KS && strcmp(tk->k->s, s) == 0;
+    if (!tk->k) return 0;
+    if (tk->kind == T_NOUN && tk->k->t == -KS)
+        return strcmp(tk->k->s, s) == 0;
+    if (tk->kind == T_VERB && tk->k->t == KV1
+        && tk->k->i >= 1 && tk->k->i - 1 < (int)NMONADICS)
+        return strcmp(MONADIC_NAMES[tk->k->i - 1], s) == 0;
+    if (tk->kind == T_VERB && tk->k->t == KV2
+        && tk->k->i >= (int)NVERBS && tk->k->i - (int)NVERBS < (int)NDYADICS)
+        return strcmp(DYADIC_NAMES[tk->k->i - (int)NVERBS], s) == 0;
+    return 0;
 }
 
 /* STEP2: is the current token the dyadic join verb ',' used as a phrase
@@ -581,6 +720,13 @@ static P parse_base(Parser *p) {
     }
     case T_LPAREN: {
         adv(p);
+        /* STEP4: a table literal is ([] ...) or ([keys] ...). The [ appears
+         * before any term, so peek without consuming. */
+        if (at(p, T_LBRACK)) {
+            K tbl = parse_table(p);
+            expect(p, T_RPAREN, "expected ')'");
+            return (P){R_NOUN, tbl};
+        }
         K e = parse_E(p);
         expect(p, T_RPAREN, "expected ')'");
         if (e->n == 1) {
@@ -593,15 +739,42 @@ static P parse_base(Parser *p) {
     }
     case T_LBRACE: {
         adv(p);
-        K e = parse_E(p);
+        /* STEP4: optional parameter list [a;b;...] after the opening brace.
+         * Each parameter must be a bare name (sym atom). When present, the
+         * AST is a 3-element KL (`{; params; body); without params it's the
+         * existing 2-element KL (`{; body). */
+        K params;
+        if (at(p, T_LBRACK)) {
+            adv(p);
+            params = parse_E(p);
+            expect(p, T_RBRACK, "expected ']'");
+            /* Empty [] produces (NULL) from parse_E; normalize to (). */
+            if (params->n == 1 && !kK(params)[0]) {
+                K empty = ktn(KL, 0);
+                dec_ref(params); params = empty;
+            }
+            /* Every param must be a bare name (sym atom). */
+            for (J i = 0; i < params->n; i++) {
+                K p = kK(params)[i];
+                if (!p || p->t != -KS)
+                    die("q: lambda parameter must be a name");
+            }
+        } else {
+            params = ktn(KL, 0);
+        }
+        K body = parse_E(p);
         expect(p, T_RBRACE, "expected '}'");
         /* Lambda marker is the sym `{ — a literal head distinguishable from
          * any verb. The body is a single (sequence) expression: {x+y} is
-         * (`{;(+;`x;`y)), {a;b} is (`{;(`;;`a;`b)). A runtime would
+         * (`{;(+;`x;`y)), {a;b} is (`{;(`;;`a;`b)). With parameters
+         * {[a;b] x+y} is (`{;(`a;`b);(+;`x;`y)). A runtime would
          * substitute the actual closure value later. */
-        K w = ktn(KL, 2);
+        int has_params = params->n > 0;
+        int arity = has_params ? 3 : 2;
+        K w = ktn(KL, arity);
         kK(w)[0] = ks("{");
-        kK(w)[1] = seq_of(e);
+        if (has_params) kK(w)[1] = params; else dec_ref(params);
+        kK(w)[has_params ? 2 : 1] = seq_of(body);
         return (P){R_NOUN, w};
     }
     default:
@@ -614,7 +787,7 @@ static P parse_base(Parser *p) {
  * (the fourth noun base, n : ... | q). Clause keywords stop the current
  * expression only when they are legal stoppers for this context:
  *
- *   Q_SELECT   stops at by / from          (by=content -> error)
+ *   Q_SELECT   stops at by / from          (where=content -> error)
  *   Q_BY       stops at from;              by=content, where=error
  *   Q_FROM     stops at where;             from=content, by=error
  *   Q_WHERE    no stoppers;                where=content, by/from=error
@@ -728,10 +901,13 @@ static P parse_e_from(Parser *p, P t, QCtx ctx) {
 
     /* te: t applied to an e whose leading term is the u we just parsed. */
     P e = parse_e_from(p, u, ctx);
-    /* Verb head in monadic position: build a fresh KV1 from the dyadic
-     * primitive's index, then release the old. Adverb-modified verbs are
-     * KL, so this check skips them. */
+    /* STEP5: what to do with a bare dyadic glyph in monadic position.
+     *   K mode: demote to KV1 (the existing kparser behaviour).
+     *   q mode: hard error -- glyphs are always dyadic, use the named monadic. */
     if (t.role == R_VERB && t.v && t.v->t == KV2) {
+        if (parser_mode == M_Q)
+            die("q: dyadic verb in monadic position; use the named monadic");
+        /* K demotion: build a fresh KV1 from the dyadic primitive's index. */
         K old = t.v;
         t.v = kverb(1, old->i);
         dec_ref(old);
@@ -751,6 +927,106 @@ static K parse_E(Parser *p) {
         buf[n++] = parse_e(p, Q_NONE).v;
     }
     return klist(buf, n);
+}
+
+/* ===== STEP 4: table literals =====
+ *
+ * A table literal desugars to existing K verbs, the same way ksql queries
+ * desugar to t[E] application. In q, `([]a:til 10;b:til 10)` is flip of
+ * a dict (!) built from the column names and values; `([k:v]a:1)` is a
+ * keyed table formed by the dyadic ! of two flipped dicts. No new AST
+ * shape, no new type code -- just assembly of KV1 (flip) and KV2 (!) nodes
+ * that the grammar already has.
+ *
+ *   ([]  cols)   ->  (flip; (!; names; values))
+ *   ([keys] cols) ->  (!; (flip; (!; knames; kvals)); (flip; (!; cnames; cvals)))
+ *
+ * Each column `name:expr` is the existing `:` assignment shape, so parse_E
+ * on `a:1;b:2` produces ((:;`a;1);(:;`b;2)). The function splits those
+ * into a sym vector of names and a list of value expressions for the
+ * dict constructor (!). */
+
+/* Collect columns from a parse_E result into name and value lists for !.
+ * Each element of `e` is an assignment (:;`name;expr) or NULL (empty col).
+ * Steals ownership of e's children; caller should dec_ref the husk. */
+static void unzip_cols(K e, K *names_out, K *vals_out) {
+    J n = e->n;
+    K names = ktn(KS, n), vals = ktn(KL, n);
+    for (J i = 0; i < n; i++) {
+        K col = kK(e)[i];
+        if (!col || col->t != KL || col->n != 3) die("q: malformed column definition");
+        K name = kK(col)[1];   /* the name sym — index 1 in nve (:;`name;expr) */
+        K expr = kK(col)[2];   /* the value expression */
+        if (!name || name->t != -KS) die("q: expected name in column definition");
+        kS(names)[i] = xstrdup(name->s);
+        kK(col)[2] = NULL;     /* detach expr so dec_ref(col) won't free it */
+        kK(vals)[i] = expr;
+        kK(e)[i] = NULL;       /* detach col so dec_ref(e) won't recurse */
+    }
+    *names_out = names;
+    *vals_out  = vals;
+}
+
+static K mkdict(K names, K vals) {
+    K d = ktn(KL, 3);
+    kK(d)[0] = kverb(0, verb_index('!'));   /* dyadic ! */
+    kK(d)[1] = names;
+    kK(d)[2] = vals;
+    return d;
+}
+
+static K mkflip(K dict) {
+    K f = ktn(KL, 2);
+    kK(f)[0] = kverb(1, verb_index('+'));   /* monadic + (flip) */
+    kK(f)[1] = dict;
+    return f;
+}
+
+static K parse_table(Parser *p) {
+    /* Consume the '[' that parse_base peeked at. */
+    adv(p);
+
+    /* Key columns inside [...] — empty if ([] ...) i.e. no key. */
+    K keys = parse_E(p);
+    expect(p, T_RBRACK, "expected ']'");
+
+    /* Value columns: name:expr ; ... */
+    K vals = parse_E(p);
+
+    K kdict = NULL, vdict = NULL;
+
+    if (keys->n == 1 && !kK(keys)[0]) {
+        /* ([ ] cols): unkeyed table. Normalize the empty-keys parse_E artifact
+         * (a 1-element KL with a NULL child) into the genuine empty list. */
+        K empty = ktn(KL, 0);
+        dec_ref(keys); keys = empty;
+    }
+
+    if (keys->n == 0) {
+        /* ([] cols): unkeyed. Build flip of dict(names, values). */
+        K ns, vs;
+        unzip_cols(vals, &ns, &vs);
+        dec_ref(vals);
+        K d = mkdict(ns, vs);
+        return mkflip(d);
+    }
+
+    /* ([keys] cols): keyed. Build ! of (flip key-dict) and (flip val-dict). */
+    K kns, kvs;
+    unzip_cols(keys, &kns, &kvs);
+    dec_ref(keys);
+    kdict = mkdict(kns, kvs);
+
+    K cns, cvs;
+    unzip_cols(vals, &cns, &cvs);
+    dec_ref(vals);
+    vdict = mkdict(cns, cvs);
+
+    K tbl = ktn(KL, 3);
+    kK(tbl)[0] = kverb(0, verb_index('!'));   /* dyadic ! for keyed table */
+    kK(tbl)[1] = mkflip(kdict);
+    kK(tbl)[2] = mkflip(vdict);
+    return tbl;
 }
 
 /* ===== STEP 2: ksql =====
@@ -835,8 +1111,9 @@ static P parse_query(Parser *p) {
     return (P){R_NOUN, w};
 }
 
-static void run(const char *src) {
-    Tokens ts = scan(src);
+static void run(const char *src, Mode mode) {
+    parser_mode = mode;
+    Tokens ts = scan(src, mode);
     Parser p = {.src = src, .t = ts, .pos = 0};
     K e = parse_E(&p);
     /* The outermost level is terminated by end-of-input, the same way a
@@ -853,15 +1130,31 @@ static void run(const char *src) {
 
 int main(void) {
     init_class();
+    /* STEP5: default mode is q.  \ toggles between K and q; k)...
+     * and q)... prefixes run one line in the named mode without
+     * changing the current mode (useful for golden tests).  The
+     * REPL prompt shows the current mode.  When stdin is piped, the
+     * plain two-space prompt lets the runner strip it. */
+    Mode mode = M_Q;
+    int interactive = isatty(STDIN_FILENO);
     char line[1024];
     for (;;) {
-        fputs("  ", stdout);
+        fputs(interactive ? (mode == M_K ? "k> " : "q> ") : "  ", stdout);
         fflush(stdout);
         if (!fgets(line, sizeof line, stdin)) { putchar('\n'); break; }
         size_t n = strlen(line);
         while (n > 0 && (line[n-1] == '\n' || line[n-1] == '\r')) line[--n] = '\0';
         if (n == 0) continue;
-        run(line);
+        /* STEP5: solo \ toggles mode (consumed, not parsed). */
+        if (n == 1 && line[0] == '\\') { mode = (mode == M_K) ? M_Q : M_K; continue; }
+        /* STEP5: k)/q) prefix runs one line in that mode without changing
+         * the current mode.  The prefix is stripped; the rest is parsed. */
+        Mode run_mode = mode;
+        if (n >= 2 && line[0] == 'k' && line[1] == ')')
+            { run_mode = M_K; memmove(line, line + 2, n - 1);  n -= 2; }
+        else if (n >= 2 && line[0] == 'q' && line[1] == ')')
+            { run_mode = M_Q; memmove(line, line + 2, n - 1);  n -= 2; }
+        run(line, run_mode);
     }
     return 0;
 }
