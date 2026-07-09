@@ -345,6 +345,17 @@ and both languages parse it the same way. The difference only appears
 when a glyph has *no* left operand and would need monadic inference:
 `+1` (K demotes, q rejects).
 
+One intentional divergence remains around adverb-derived verbs as implicit
+`te` heads. The small grammar treats `f'`, `+/`, `count/`, and longer adverb
+trains as ordinary verb terms, so forms like `f'1 2 3` or `+/til 10` parse
+compositionally as implicit application; stricter q surfaces require bracket
+application or parenthesizing for those cases (`f'[1 2 3]`, `(f')1 2 3`). We
+keep the cleaner grammar here. To enforce the stricter rule, add an
+`is_adverb_derived(K)` predicate for `KL` nodes headed by an adverb symbol and,
+in the q `te` branch of `parse_e_from`, reject only when `t.role == R_VERB &&
+is_adverb_derived(t.v)`. That preserves lone derived verbs, bracket calls,
+infix `nve` use, and parenthesized heads.
+
 ### ksql: `where`/`count`/`first` become the monadic names
 
 A nice consequence: the three ksql clause keywords that are also q monadic
