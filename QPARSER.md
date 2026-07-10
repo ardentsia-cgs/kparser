@@ -258,8 +258,8 @@ if (t.role == R_NOUN && u.role == R_VERB && !is_q_named_monadic(u.v)) {
 
 Skipping the branch lets the named monadic fall through to `te`, where it
 heads its own application. So `f til 10` is *not* `til[f;10]`; it is `f`
-applied to `(til 10)` — `` (`f;(til;10)) `` — and `5 til 10` is
-`(5;(til;10))`. Explicit glyph-colon forms still infix: `f +: x` becomes
+applied to `(til 10)` — `` (`f;(til;10)) `` — and `x til 10` is
+`` (`x;(til;10)) ``. Explicit glyph-colon forms still infix: `f +: x` becomes
 `` (+:;`f;`x) ``. Adverb-derived verbs are `KL` (variadic), not provenance-
 marked `KV1`, so `1 +/ 2 3` and `1 count/ 2 3` still infix. Between them,
 the two checks are the parser-side diff: reject a `KV2` in monadic position,
@@ -308,7 +308,7 @@ just a `KV2` whose index falls past the glyphs.
 The demotion check is the one that *changes a tree* between K and q: a
 dyadic glyph with no left operand. The nve check is different — it doesn't
 create a K-vs-q divergence, it *preserves the K shape*: because a named
-monadic follows a noun as a `te` (not an infix), `5 til 10` has the same
+monadic follows a noun as a `te` (not an infix), `x til 10` has the same
 structure in both languages, just a different head rendering.
 
 | input | K (kparser today) | q (named monadics) |
@@ -316,7 +316,7 @@ structure in both languages, just a different head rendering.
 | `+1` | `(+:;1)` | error² |
 | `2+1` | `(+;2;1)` | `(+;2;1)` |
 | `til 10` | `(`til;10)`¹ | `(til;10)` |
-| `5 til 10` | `(5;(`til;10))`¹ | `(5;(til;10))` |
+| `x til 10` | `` (`x;(`til;10)) ``¹ | `` (`x;(til;10)) `` |
 | `f +: x` | `(+:;`f;`x)` | `(+:;`f;`x)` |
 | `2+/til 10` | `((`/;+);2;(`til;10))`¹ | `((`/;+);2;(til;10))` |
 
@@ -330,12 +330,12 @@ than `` `til `` (a sym atom).
 `+1` is a parse error — `+` can't be monadic (that's `flip`), and there's
 no left operand for dyadic add. The user writes `flip 1` instead.
 
-The `5 til 10` row is where the nve check earns its keep. `til` is a `KV1`
+The `x til 10` row is where the nve check earns its keep. `til` is a `KV1`
 verb with named-keyword provenance, but K's rule "noun, verb, rest → infix"
-would wrongly build `(til;5;10)` — a two-argument application of a
+would wrongly build `` (til;`x;10) `` — a two-argument application of a
 one-argument verb. The nve check excludes that provenance, so the verb falls
 through to `te`: `til` heads its own application `(til 10)`, and the leading
-`5` applies to that. Explicit glyph-colon `KV1` terms such as `+:` do not
+`x` applies to that. Explicit glyph-colon `KV1` terms such as `+:` do not
 carry that provenance, so they still take the nve branch.
 
 The `2+/til 10` row is worth noting: it works in *both* K and q, because
