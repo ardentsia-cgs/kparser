@@ -10,6 +10,7 @@ uparser
 *.gcda
 *.gcov
 *.dSYM/
+*.asan
 
 # macOS
 .DS_Store

@@ -109,14 +109,15 @@ typedef char       *S;
 #define KV1 101
 #define KV2 102
 
-/* m, a, u are header bytes kept only for layout parity with other K
- * implementations; we don't use them. r is the refcount used by
- * dec_ref/inc_ref. The union is the classic K idiom: for atoms we use
- * i/s/k directly; for vectors n is the element count and G0[] is a
- * flexible-array tail accessed via the kI/kS/kK casts. */
+/* m and a are header bytes kept only for layout parity with other K
+ * implementations; we don't use them. u carries attribute bits (V_ELIDED
+ * below). r is the refcount used by dec_ref/inc_ref. The union is the
+ * classic K idiom: for atoms we use i/s/k directly; for vectors n is the
+ * element count and G0[] is a flexible-array tail accessed via the
+ * kI/kS/kK casts. */
 typedef struct k0 {
     signed char m, a, t;       /* m, a unused here; t = type code */
-    G u;                       /* attribute flags, unused */
+    G u;                       /* attribute bits (V_ELIDED) */
     I r;                       /* reference count */
     union {
         I i;                   /* atom: int value, or verb-table index */
@@ -217,17 +218,29 @@ static K kverb(int monadic, int idx) {
     return x;
 }
 
-/* Generic null `::` -- K's identity value, and the marker for an elided
- * argument in a projection (f[;2] -> (`f;::;2), 2+ -> (+;2;::)). It is the
- * monadic colon (KV1, index 0), which print_k renders as "::". K has no
- * separate "missing" type; the generic null *is* the hole. */
-static K knull(void) { return kverb(1, 0); }
+/* Attribute bit in the u byte. Bit 0 is reserved: the q parsers (qparser.c,
+ * uparser.c) use it as V_QNAME for named-verb provenance, so the elided bit
+ * is bit 1 in every file of the series. */
+#define V_ELIDED 2   /* this null fills an elided slot; print as nothing */
+
+/* An elided position -- f[;2], f[], 2+, (1;;3) -- is filled with K's
+ * generic null `::`, the monadic colon (KV1, index 0). There is no separate
+ * "missing" type: the generic null *is* the hole, and an explicit `::` in
+ * the source scans to the very same value. kelide() tags the parser-inserted
+ * one with V_ELIDED, which is display provenance only: print_k renders an
+ * elided slot as nothing (f[;2] -> (`f;;2)) and a written :: as ::, so the
+ * printed AST preserves the source's spelling. An evaluator ignores the
+ * bit -- f[;2] and f[::;2] are the same projection. */
+static K kelide(void) { K x = kverb(1, 0); x->u |= V_ELIDED; return x; }
 
 static const char *ADVERB_NAMES[] = { "'", "/", "\\", "':", "/:", "\\:" };
 
-/* ===== lisp-style printer ===== */
+/* ===== lisp-style printer =====
+ *
+ * Finished ASTs never contain C NULLs (see the invariant at the parser
+ * section); a NULL here is a parser bug, printed loudly. */
 static void print_k(K x) {
-    if (!x) { printf("()"); return; }
+    if (!x) { printf("?[null]"); return; }
     switch (x->t) {
     case -KI:
         printf("%d", x->i);
@@ -251,6 +264,7 @@ static void print_k(K x) {
         putchar(')');
         break;
     case KV1: case KV2:
+        if (x->u & V_ELIDED) break;   /* elided slot: prints as nothing */
         if (x->i >= 0 && x->i < (int)NVERBS) {
             putchar(VERB_CHARS[x->i]);
             if (x->t == KV1) putchar(':');
@@ -298,6 +312,10 @@ static void init_class(void) {
     for (int c = '0'; c <= '9'; c++) CLASS[c] |= CL_DIGIT;
     for (int c = 'a'; c <= 'z'; c++) CLASS[c] |= CL_ALPHA;
     for (int c = 'A'; c <= 'Z'; c++) CLASS[c] |= CL_ALPHA;
+    /* '_' lands in BOTH classes: CL_ALPHA here and CL_VERB below (it is in
+     * VERB_CHARS). The scanner's branch order resolves the ambiguity -- the
+     * ALPHA branch is tested first, so '_' always lexes as (part of) a name
+     * (1_2 is the name `_2 juxtaposed onto 1), never as the drop/floor verb. */
     CLASS[(int)'_'] |= CL_ALPHA;
     for (const char *p = VERB_CHARS; *p; p++) CLASS[(uint8_t)*p] |= CL_VERB;
     CLASS[(int)'\''] |= CL_ADVERB;
@@ -459,7 +477,7 @@ static Tokens scan(const char *src) {
             case '[': kk = T_LBRACK; noun_pos = 0; break;
             case ']': kk = T_RBRACK; noun_pos = 1; break;
             case ';': kk = T_SEMI;   noun_pos = 0; break;
-            default:  p++; continue;   /* skip unknown */
+            default:  die("unexpected character");   /* fail fast, like the parser */
             }
             p++;
             EMIT(kk, NULL);
@@ -504,11 +522,28 @@ static void free_tokens(Tokens ts) {
  * decision in parse_e; the K v is the assembled AST fragment whose
  * ownership transfers up the call chain (no inc_ref — every K has one
  * implicit owner).
+ *
+ * Emptiness invariant: parse functions never return a C NULL for valid
+ * input -- NULL is reserved for a future error channel. The empty
+ * production (e : nve | te | EMPTY) parses to role R_NONE carrying an
+ * elided null (kelide()), an ordinary owned node like any other; the
+ * caller either attaches it (it is a hole: f[;2], 2+) or releases it
+ * (the trailing lookahead miss after a complete e). A zero-element (E)
+ * is the genuine empty list. So the three nothings stay distinct:
+ *
+ *   ()        empty list, a noun            prints ()
+ *   (;2;3)    elided slot = implicit null   prints (;2;3)
+ *   (::;2;3)  written ::  = identity verb   prints (::;2;3)
  */
 
 typedef enum { R_NONE, R_NOUN, R_VERB } Role;
 typedef struct { Role role; K v; } P;
-static const P EMPTY = { R_NONE, NULL };
+
+/* The parse of the empty production: no expression here, value is an
+ * elided null. Every miss allocates a fresh node -- interning the shared
+ * verb values (this one included) is deliberately deferred; the parser
+ * isn't allocation-bound (see README on the arena). */
+static P empty_e(void) { return (P){R_NONE, kelide()}; }
 
 /* STEP2: the parse context for an expression. A query clause bounds the
  * expression it contains; everywhere else there are no boundaries. The
@@ -524,7 +559,6 @@ static const P EMPTY = { R_NONE, NULL };
 typedef enum { Q_NONE, Q_SELECT, Q_BY, Q_FROM, Q_WHERE } QCtx;
 
 typedef struct {
-    const char *src;
     Tokens t;
     int pos;
 } Parser;
@@ -551,6 +585,15 @@ static P parse_base(Parser *p);              /* Step-1 core, unchanged        */
 static P parse_base_q(Parser *p, QCtx ctx);  /* STEP2: query-aware wrapper     */
 static P parse_query(Parser *p);             /* STEP2 */
 static K parse_phrase_list(Parser *p, QCtx ctx); /* STEP2: ctx = SELECT/BY/WHERE */
+
+/* Unwrap a one-element list: detach the only child, release the husk,
+ * return the child. Shared by (E) with one element and seq_of. */
+static K unwrap_singleton(K e) {
+    K only = kK(e)[0];
+    kK(e)[0] = NULL;   /* detach so dec_ref(e) won't recurse into it */
+    dec_ref(e);
+    return only;
+}
 
 /* STEP2: is the current token the name `s? Query keywords scan as ordinary
  * -KS name tokens; the parser recognizes them positionally by string. */
@@ -584,12 +627,8 @@ static int is_clause_kw(Token *tk) {
  * or more are wrapped under the sym `; so an evaluator can dispatch on the
  * head, exactly as it would on `{ for a lambda. Consumes e. */
 static K seq_of(K e) {
-    if (e->n == 1) {
-        K only = kK(e)[0];
-        kK(e)[0] = NULL;   /* detach so dec_ref(e) won't recurse into it */
-        dec_ref(e);
-        return only;
-    }
+    if (e->n == 0) { dec_ref(e); return kelide(); }   /* empty body: elided */
+    if (e->n == 1) return unwrap_singleton(e);
     K w = ktn(KL, e->n + 1);
     kK(w)[0] = ks(";");
     for (J i = 0; i < e->n; i++) { kK(w)[i+1] = kK(e)[i]; kK(e)[i] = NULL; }
@@ -614,12 +653,8 @@ static P parse_base(Parser *p) {
         adv(p);
         K e = parse_E(p);
         expect(p, T_RPAREN, "expected ')'");
-        if (e->n == 1) {
-            K only = kK(e)[0];
-            kK(e)[0] = NULL;  /* detach so dec_ref(e) won't recurse into it */
-            dec_ref(e);
-            return (P){R_NOUN, only};
-        }
+        /* (x) is just x; () is the empty list; (a;b;...) stays a list. */
+        if (e->n == 1) return (P){R_NOUN, unwrap_singleton(e)};
         return (P){R_NOUN, e};
     }
     case T_LBRACE: {
@@ -636,7 +671,7 @@ static P parse_base(Parser *p) {
         return (P){R_NOUN, w};
     }
     default:
-        return EMPTY;
+        return empty_e();
     }
 }
 
@@ -645,7 +680,7 @@ static P parse_base(Parser *p) {
  * (the fourth noun base, n : ... | q). Clause keywords stop the current
  * expression only when they are legal stoppers for this context:
  *
- *   Q_SELECT   stops at by / from          (by=content -> error)
+ *   Q_SELECT   stops at by / from          (where -> error)
  *   Q_BY       stops at from;              by=content, where=error
  *   Q_FROM     stops at where;             from=content, by=error
  *   Q_WHERE    no stoppers;                where=content, by/from=error
@@ -662,14 +697,14 @@ static P parse_base_q(Parser *p, QCtx ctx) {
             is_where = sym_is(tk, "where");
         switch (ctx) {
         case Q_SELECT:
-            if (is_by || is_from) return EMPTY;
+            if (is_by || is_from) return empty_e();
             die("ksql: unexpected keyword after select (expected by or from)");
         case Q_BY:
-            if (is_from) return EMPTY;
+            if (is_from) return empty_e();
             if (is_by) break;  /* own keyword: content, not stopper */
             die("ksql: unexpected keyword in by phrase (expected from)");
         case Q_FROM:
-            if (is_where) return EMPTY;
+            if (is_where) return empty_e();
             if (is_from) break;  /* own keyword: content, not stopper */
             die("ksql: unexpected keyword after from (expected where)");
         case Q_WHERE:
@@ -678,7 +713,7 @@ static P parse_base_q(Parser *p, QCtx ctx) {
         default: break;
         }
     }
-    if (ctx != Q_NONE && ctx != Q_FROM && is_comma(tk)) return EMPTY;
+    if (ctx != Q_NONE && ctx != Q_FROM && is_comma(tk)) return empty_e();
     return parse_base(p);
 }
 
@@ -692,14 +727,13 @@ static P parse_term(Parser *p, QCtx ctx) {
             adv(p);
             K e = parse_E(p);
             expect(p, T_RBRACK, "expected ']'");
-            K w = ktn(KL, e->n + 1);
+            /* Elided slots already arrive as elided nulls from parse_e; the
+             * one extra rule is f[] = f[::], a single elided argument. */
+            J argc = e->n ? e->n : 1;
+            K w = ktn(KL, argc + 1);
             kK(w)[0] = t.v;
-            /* An elided argument slot (NULL) is the generic null `::`: the
-             * projection f[;2] is (`f;::;2), and f[] is (`f;::). */
-            for (J i = 0; i < e->n; i++) {
-                kK(w)[i+1] = kK(e)[i] ? kK(e)[i] : knull();
-                kK(e)[i] = NULL;
-            }
+            if (e->n == 0) kK(w)[1] = kelide();
+            for (J i = 0; i < e->n; i++) { kK(w)[i+1] = kK(e)[i]; kK(e)[i] = NULL; }
             dec_ref(e);
             t.v = w; t.role = R_NOUN;
         } else if (tk->kind == T_ADVERB) {
@@ -723,12 +757,13 @@ static P parse_term(Parser *p, QCtx ctx) {
  * verbs and mis-structured noun-derived verbs (tA) in infix position.
  *
  * This stays predictive and linear, not backtracking: parse_term consumes
- * nothing when there is no term (parse_base returns EMPTY without calling
- * adv), so speculatively parsing the next term is free one-term lookahead.
- * No token is ever un-read, and each term is parsed exactly once. */
+ * nothing when there is no term (parse_base returns the empty production
+ * without calling adv), so speculatively parsing the next term is cheap
+ * one-term lookahead. No token is ever un-read, and each term is parsed
+ * exactly once. */
 static P parse_e(Parser *p, QCtx ctx) {
     P t = parse_term(p, ctx);
-    if (t.role == R_NONE) return EMPTY;
+    if (t.role == R_NONE) return t;   /* empty e: the elided null flows up */
     return parse_e_from(p, t, ctx);
 }
 
@@ -740,20 +775,21 @@ static P parse_e_from(Parser *p, P t, QCtx ctx) {
     P u = parse_term(p, ctx);
 
     /* No following term: lone term (te with empty rhs). A bare term stands
-     * for itself; a lone dyadic verb keeps its dyadic form (no demotion). */
-    if (u.role == R_NONE) return t;
+     * for itself; a lone dyadic verb keeps its dyadic form (no demotion).
+     * The lookahead miss carries an unused elided null; release it. */
+    if (u.role == R_NONE) { dec_ref(u.v); return t; }
 
     /* nve: noun, then verb-term, then the rest. u is whatever parse_term
      * produced for the second term -- a primitive (KV2) or an adverb-derived
      * verb (KL) -- so this now catches f', {x+y}', (E)' just like +, %, &. */
     if (t.role == R_NOUN && u.role == R_VERB) {
+        /* An empty right operand is an elided argument: 2+ is the projection
+         * +[2;], i.e. (+;2;) -- and parse_e already returns that hole. */
         P e = parse_e(p, ctx);
         K w = ktn(KL, 3);
         kK(w)[0] = u.v;
         kK(w)[1] = t.v;
-        /* Empty right operand is an elided argument: 2+ is the projection
-         * +[2;], i.e. (+;2;::), so mark the hole with the generic null. */
-        kK(w)[2] = e.v ? e.v : knull();
+        kK(w)[2] = e.v;
         return (P){R_NOUN, w};
     }
 
@@ -773,9 +809,18 @@ static P parse_e_from(Parser *p, P t, QCtx ctx) {
     return (P){R_NOUN, w};
 }
 
+/* Elided positions -- (;2;3), (1;;3), 1;;2 -- need no special handling
+ * here: an empty e already arrives as the elided null. The one distinction
+ * parse_E draws is zero expressions vs one empty expression: (E) with no
+ * expression at all (and hence no ';') is the genuine empty list (). */
 static K parse_E(Parser *p) {
     K buf[MAX_VEC]; int n = 0;
-    buf[n++] = parse_e(p, Q_NONE).v;
+    P first = parse_e(p, Q_NONE);
+    if (first.role == R_NONE && !at(p, T_SEMI)) {
+        dec_ref(first.v);
+        return ktn(KL, 0);                    /* no expressions at all: () */
+    }
+    buf[n++] = first.v;
     while (at(p, T_SEMI)) {
         if (n >= MAX_VEC) die("too many ';'-separated expressions");
         adv(p);
@@ -816,13 +861,15 @@ static K emit_query(K head, K t, K c, K b, K a) {
 static K parse_phrase_list(Parser *p, QCtx ctx) {
     K buf[MAX_VEC]; int n = 0;
     P first = parse_e(p, ctx);
-    if (first.role == R_NONE) return ktn(KL, 0);   /* no phrases -> () */
+    if (first.role == R_NONE && !is_comma(cur(p))) {
+        dec_ref(first.v);
+        return ktn(KL, 0);                         /* no phrases -> () */
+    }
     buf[n++] = first.v;
     while (is_comma(cur(p))) {
         adv(p);                                    /* step over separator */
         if (n >= MAX_VEC) die("ksql: too many phrases");
-        P f = parse_e(p, ctx);
-        buf[n++] = f.v ? f.v : knull();            /* empty phrase -> :: */
+        buf[n++] = parse_e(p, ctx).v;              /* empty phrase -> elided */
     }
     return klist(buf, n);
 }
@@ -854,7 +901,7 @@ static P parse_query(Parser *p) {
     if (!sym_is(cur(p), "from")) die("ksql: expected 'from'");
     adv(p);
     P tp = parse_e(p, Q_FROM);                   /* table is one expr: ',' joins, stops at where */
-    if (!tp.v) die("ksql: expected table after 'from'");
+    if (tp.role == R_NONE) die("ksql: expected table after 'from'");
     K t = tp.v;
 
     K c;
@@ -1338,7 +1385,6 @@ static P parse_sql_query(Parser *p) {
     if (sql_kw(tk, "update")) return parse_update(p);
     if (sql_kw(tk, "delete")) return parse_delete(p);
     die("sql: expected SELECT, UPDATE, or DELETE");
-    return EMPTY;
 }
 
 static void run(const char *src, Mode mode) {
@@ -1346,7 +1392,7 @@ static void run(const char *src, Mode mode) {
      * the same print_k / dec_ref / free_tokens below. */
     if (mode == M_SQL) {
         Tokens ts = scan_sql(src);
-        Parser p = {.src = src, .t = ts, .pos = 0};
+        Parser p = {.t = ts, .pos = 0};
         K e = parse_sql_query(&p).v;
         if (at(&p, T_SEMI)) adv(&p);               /* optional trailing ';' */
         if (!at(&p, T_EOF)) die("sql: unexpected token");
@@ -1357,7 +1403,7 @@ static void run(const char *src, Mode mode) {
         return;
     }
     Tokens ts = scan(src);
-    Parser p = {.src = src, .t = ts, .pos = 0};
+    Parser p = {.t = ts, .pos = 0};
     K e = parse_E(&p);
     /* The outermost level is terminated by end-of-input, the same way a
      * bracketed level is terminated by its closer. A leftover token here is

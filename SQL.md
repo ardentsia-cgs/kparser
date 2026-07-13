@@ -12,7 +12,7 @@ whole point is that it targets the *same AST* as ksql:
 ```
 
 is the exact tree ksql produces for `select from t`. `sqlparser.c` is
-`ksqlparser.c` plus a ~480-line sql layer and a runtime **mode switch**; as
+`ksqlparser.c` plus a ~530-line sql layer and a runtime **mode switch**; as
 before, `diff ksqlparser.c sqlparser.c` *is* the lesson.
 
 ```sh

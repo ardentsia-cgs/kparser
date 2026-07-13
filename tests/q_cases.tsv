@@ -115,10 +115,12 @@ avg	`avg
 lj	lj
 bin	bin
 
-// ---- projections: elided slots still become :: ----
-+[2;]	(+;2;::)
-f[;2]	(`f;::;2)
-f[]	(`f;::)
+// ---- projections: an elided slot is the implicit null (prints as nothing),
+//      distinct from a written :: (same value, different spelling) ----
++[2;]	(+;2;)
+f[;2]	(`f;;2)
+f[]	(`f;)
+f[::;2]	(`f;::;2)
 
 // ---- lambdas, parens, sequencing: unchanged from K ----
 {x+y}	(`{;(+;`x;`y))
@@ -127,7 +129,7 @@ f[]	(`f;::)
 1;2;3	(`;;1;2;3)
 
 // ---- lambda parameter lists: 2-element KL without params, 3-element with -------
-{}	(`{;())
+{}	(`{;)
 {[] x}	(`{;`x)
 {[a] a+x}	(`{;(`a);(+;`a;`x))
 {[a;b] a+b}	(`{;(`a;`b);(+;`a;`b))

@@ -10,7 +10,7 @@ update  phrases  [by phrases] from e [where phrases]
 delete [phrases]              from e [where phrases]
 ```
 
-`ksqlparser.c` is `kparser.c` plus a ~120-line ksql layer. The point of
+`ksqlparser.c` is `kparser.c` plus a ~190-line ksql layer. The point of
 keeping it as a separate file is that `diff kparser.c ksqlparser.c` *is*
 the lesson — you can see exactly what the feature costs.
 
@@ -253,9 +253,10 @@ kparser: ksql: empty 'where'
 
 The select/phrase list itself may be empty — `select from t` is a valid
 "all columns". And an elided *phrase* (e.g. `select x, from t`) still
-becomes the generic null `::`, mirroring how the core parser fills a
-projection hole (`f[1;;3]`, `2+`). Anything beyond shape — does the table
-exist, is the column real — is the evaluator's job, not the parser's.
+becomes the implicit null (printed as nothing), mirroring how the core
+parser fills a projection hole (`f[1;;3]`, `2+`). Anything beyond shape —
+does the table exist, is the column real — is the evaluator's job, not
+the parser's.
 
 ### Clauses must appear in order
 

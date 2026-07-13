@@ -116,5 +116,6 @@ coverage: clean
 
 clean:
 	rm -f $(BIN) $(BIN2) $(BIN3) $(BIN4) $(BIN5) kparser.o *.gcda *.gcno *.gcov
+	rm -rf *.dSYM
 
 .PHONY: all strict debug run run2 run3 run4 run5 test test2 test3 test4 test5 coverage clean

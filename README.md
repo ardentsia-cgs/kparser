@@ -5,7 +5,7 @@
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 A small, readable parser for the K programming language. One C file,
-about 570 lines including comments. It's a pedagogical reference — its
+about 730 lines including comments. It's a pedagogical reference — its
 job is to make the K grammar legible.
 
 There is no evaluator here. The parser reads K source from a REPL and
@@ -203,23 +203,36 @@ the verb tables exist but stay empty in a parser.
 A **projection** is an application with a missing argument. K marks the
 hole with its *generic null* `::` — and notably there is no separate
 "missing" type: the generic null (the monadic colon, `KV1` index 0)
-*is* the hole. The empty `e` (the `e : empty` rule) in an argument
-position becomes `::`:
+*is* the hole. The empty `e` (the `e : empty` rule) parses to exactly
+this value, so a hole is an ordinary node — the parser just tags it
+elided (`V_ELIDED`, a bit in the K header) so the printer can render it
+as nothing, the way it was written:
 
 ```
-2+        ->  (+;2;::)        right arg of dyadic + elided
-f[1;;3]   ->  (`f;1;::;3)     middle arg elided
-f[;2]     ->  (`f;::;2)       left arg elided
-f[]       ->  (`f;::)         f[] is f[::]
+2+        ->  (+;2;)          right arg of dyadic + elided
+f[1;;3]   ->  (`f;1;;3)       middle arg elided
+f[;2]     ->  (`f;;2)         left arg elided
+f[]       ->  (`f;)           f[] is f[::], one elided slot
+f[::;2]   ->  (`f;::;2)       explicitly written :: prints as ::
 ```
 
-Note `::` is distinct from `()`: `()` is the empty *list* (a noun), while
-`::` is the generic null filling an elided slot — so the parser keeps
-them apart (the hole substitution happens only in `t[E]` argument lists
-and the `nve` empty-operand case; an empty `(E)` stays `()`). An
-evaluator counts the non-`::` slots against the verb's valence; too few
-means "return a function awaiting the rest" — a projection. No new node
-and no new type, just generic nulls in an ordinary apply tree.
+The elided bit is display provenance only: `f[;2]` and `f[::;2]` hold
+the same value in the hole slot, and an evaluator treats them
+identically. This keeps the parser's three "nothings" distinct on both
+sides — in the tree and on the page:
+
+```
+()          the empty list, a noun         prints ()
+(;2;3)      elided slot = implicit null    prints (;2;3)
+(::;2;3)    written ::  = identity verb    prints (::;2;3)
+```
+
+(Real q's `parse` displays holes as `::`; printing them as nothing is
+strictly more informative — the printed AST preserves the source's
+spelling and re-reads unambiguously.) An evaluator counts the non-null
+slots against the verb's valence; too few means "return a function
+awaiting the rest" — a projection. No new node and no new type, just
+generic nulls in an ordinary apply tree.
 
 A **composition** is juxtaposition (`te`) where the term and the
 expression are both functions rather than function-and-noun:
@@ -277,7 +290,8 @@ element). `` `; `` can only ever be this marker — `;` lexes as a separator
 token, never a name — so, like `` `{ ``, it is unambiguous as a head. The
 transform lives in one helper, `seq_of`, applied at the two sequence
 contexts (the top-level program in `run`, and the lambda body); list and
-argument contexts are left untouched.
+argument contexts are left untouched. Elided statements are the same
+implicit null as elided arguments: `1;;2` is `` (`;;1;;2) ``.
 
 ### Ref counting without an arena
 
@@ -303,10 +317,10 @@ one is a hard `die`, fail-fast like the rest of the parser:
 ```
 
 This is independent of the deliberate hole-filling: `f[]`, `f[;2]`, and
-`2+` are *balanced*, so their elided slots still become `::`. Only
-genuinely unbalanced input errors. (Richer messages naming the offending
-position are the `start`/`len` plumbing listed under *Source-position
-errors* below.)
+`2+` are *balanced*, so their elided slots still become implicit nulls.
+Only genuinely unbalanced input errors. (Richer messages naming the
+offending position are the `start`/`len` plumbing listed under
+*Source-position errors* below.)
 
 ## What's missing
 
@@ -330,7 +344,7 @@ The surprise is how little it costs: a query turns out to be a fourth
 application shape you already have, `` (`verb; t; c; b; a) ``. Aliases
 (`qty:sum amt`) need no new syntax at all — they are the existing `:`
 assignment. The Step 2 code lives in [`ksqlparser.c`](ksqlparser.c)
-(`kparser.c` plus a ~120-line ksql layer); build it with `make ksqlparser`
+(`kparser.c` plus a ~190-line ksql layer); build it with `make ksqlparser`
 and test it with `make test2`.
 
 ## Next: sql (Step 3)
