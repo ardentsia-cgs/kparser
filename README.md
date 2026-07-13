@@ -159,6 +159,22 @@ So `a-1` is subtraction, `a:-1` is assigning `-1` to `a`, and `1 -2 3`
 is a three-element vector. The scanner tracks a `noun_pos` flag to
 decide each `-` in one pass — no backtracking.
 
+### Underscore: name char vs the drop/floor verb
+
+`_` is ambiguous the same way: it is the drop/floor verb (`1_2`, `_ 3`)
+but also a legal name character (`a_bc`, `_abc`). The rule:
+
+> At token start, `_` begins a name iff the next character is a name
+> character. Otherwise it's the verb. Inside a name, `_` always
+> continues the name.
+
+So `_` alone is the verb, `_3` is floor-of-3, `1_2` is drop, and `_abc`
+and `a_bc` are names. Unlike the `-` rule this is purely lexical — one
+character of lookahead, no `noun_pos` — so `_abc` is a name in every
+position. The cost is that `_` glues to a following name: `1_abc` is
+the name `_abc` juxtaposed onto `1`, not drop; write `1_ abc` or
+`_[1;abc]` for drop-onto-a-name.
+
 ### Two-phase: the scanner builds K objects directly
 
 A first cut had the scanner emit "tokens with parsed payloads" that the
@@ -410,8 +426,8 @@ context) while dropping all structure (`(E)`, `{E}`, `t[E]`, `;`).
 For five productions, a parser generator is mostly overhead — but that's
 the easy answer. The more interesting reason is that K's *lexer* is where
 the difficulty lives. The grammar itself is small and uniform; the
-tokenization is context-dependent in three places, and most parser tools
-assume those three places don't exist. (Worth noting that production
+tokenization is context-dependent in four places, and most parser tools
+assume those four places don't exist. (Worth noting that production
 compilers — clang, rustc, GCC's C frontend — are all hand-rolled
 recursive descent for similar reasons: the grammar is small relative to
 the surrounding semantic machinery, and the tricky bits live outside
@@ -419,7 +435,7 @@ what a generator can express.)
 
 ### The lexer is the hard part
 
-Three K tokenization rules can't be expressed by a context-free regex:
+Four K tokenization rules can't be expressed by a context-free regex:
 
 - **`-` sign vs subtract.** In `1-2`, the `-` is the dyadic subtract
   verb; in `1 -2 3` it's a sign on the second integer. The disambiguator
@@ -434,8 +450,11 @@ Three K tokenization rules can't be expressed by a context-free regex:
   a symbol literal (one-element sym vector). Same K type code, atom vs
   vector — the printer prints the latter with a leading `,` ("enlist")
   to disambiguate.
+- **`_` name char vs drop/floor.** In `a_bc` and `_abc` the underscore
+  is part of a name; alone or before a non-name character (`1_2`, `_ 3`)
+  it's the verb. One character of lookahead at token start settles it.
 
-These three rules are why this implementation splits scanning and
+These four rules are why this implementation splits scanning and
 parsing into two passes: the scanner resolves all the context-sensitive
 classification, hands the parser clean tokens, and the parser sees an
 unambiguous stream. Any tool you pick has to confront these — usually

@@ -74,6 +74,7 @@ f[1]'	(`';(`f;1))
 2,3	(,;2;3)
 2^3	(^;2;3)
 2#3	(#;2;3)
+2_3	(_;2;3)
 2$3	($;2;3)
 2?3	(?;2;3)
 2@3	(@;2;3)
@@ -89,6 +90,8 @@ f[1]'	(`';(`f;1))
 $5	($:;5)
 ,1	(,:;1)
 #1 2 3	(#:;1 2 3)
+_ 3	(_:;3)
+_:3	(_:;3)
 |1 2 3	(|:;1 2 3)
 :5	(::;5)
 +:5	(+:;5)
@@ -144,9 +147,27 @@ a-1	(-;`a;1)
 - 3	(-:;3)
 1 - 2	(-;1;2)
 
+// ---- scanner: '_' name vs drop/floor (the name_start rule) ----
+// At token start, '_' begins a name iff a name char follows; otherwise it
+// is the verb. Inside a name it always continues. Purely lexical, so _abc
+// is a name everywhere -- but 1_abc juxtaposes, use whitespace (1_ abc)
+// or brackets for drop-onto-a-name.
+_	_
+_abc	`_abc
+a_bc	`a_bc
+_3	(_:;3)
+1_2	(_;1;2)
+1_abc	(1;`_abc)
+x _y	(`x;`_y)
+1_ abc	(_;1;`abc)
+a:_abc	(:;`a;`_abc)
+f[_abc]	(`f;`_abc)
+(_abc;1)	(`_abc;1)
+__a	`__a
+_[1;2 3 4]	(_;1;2 3 4)
+
 // ---- scanner quirks pinned (documented limitations) ----
 2.3	(.;2;3)
-2_3	(2;`_3)
 
 // ---- abort routes (die): integer overflow ----
 99999999999	@ABORT

@@ -313,9 +313,12 @@ static void init_class(void) {
     for (int c = 'a'; c <= 'z'; c++) CLASS[c] |= CL_ALPHA;
     for (int c = 'A'; c <= 'Z'; c++) CLASS[c] |= CL_ALPHA;
     /* '_' lands in BOTH classes: CL_ALPHA here and CL_VERB below (it is in
-     * VERB_CHARS). The scanner's branch order resolves the ambiguity -- the
-     * ALPHA branch is tested first, so '_' always lexes as (part of) a name
-     * (1_2 is the name `_2 juxtaposed onto 1), never as the drop/floor verb. */
+     * VERB_CHARS). The K scanner resolves the ambiguity with one char of
+     * lookahead: at token start, '_' begins a name iff a name char follows
+     * (_abc), otherwise it is the drop/floor verb (1_2, _ 3). Inside a name
+     * it always continues (a_bc). Purely lexical -- context plays no part,
+     * so _abc is a name everywhere. scan_sql() is unaffected: SQL identifiers
+     * keep the plain ALPHA reading, so leading underscores stay name chars. */
     CLASS[(int)'_'] |= CL_ALPHA;
     for (const char *p = VERB_CHARS; *p; p++) CLASS[(uint8_t)*p] |= CL_VERB;
     CLASS[(int)'\''] |= CL_ADVERB;
@@ -393,6 +396,12 @@ static Tokens scan(const char *src) {
 
         int neg_sign = (c == '-' && (CLASS[(uint8_t)src[p+1]] & CL_DIGIT) && !noun_pos);
 
+        /* '_' starts a name iff a name char follows; otherwise it falls
+         * through to the CL_VERB branch as drop/floor. One char of
+         * lookahead, no context (contrast neg_sign above). */
+        int name_start = (cl & CL_ALPHA) &&
+            (c != '_' || (CLASS[(uint8_t)src[p+1]] & CL_ALPHA));
+
         if ((cl & CL_DIGIT) || neg_sign) {
             I buf[MAX_VEC]; int m = 0;
             buf[m++] = scan_int(src, &p);
@@ -417,7 +426,7 @@ static Tokens scan(const char *src) {
             EMIT(T_NOUN, k);
             noun_pos = 1;
         }
-        else if (cl & CL_ALPHA) {
+        else if (name_start) {
             while (CLASS[(uint8_t)src[p]] & (CL_ALPHA | CL_DIGIT)) p++;
             while (src[p] == '.' && (CLASS[(uint8_t)src[p+1]] & CL_ALPHA)) {
                 p++;
