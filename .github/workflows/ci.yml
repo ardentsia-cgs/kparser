@@ -76,8 +76,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - name: Install protobuf-c (compiler + runtime)
-        run: sudo apt-get update && sudo apt-get install -y protobuf-c-compiler libprotobuf-c-dev
+      - name: Install protobuf + protobuf-c (compilers + runtime)
+        # protobuf-compiler provides `protoc` (libpg_query's own build runs
+        # `protoc --c_out` to generate its bindings); protobuf-c-compiler
+        # provides `protoc-c` and the protoc-gen-c plugin `protoc` invokes,
+        # plus the runtime our pglower build links against.
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler protobuf-c-compiler libprotobuf-c-dev
       - name: Build libpg_query from source (pinned to the 18 branch)
         run: |
           git clone -b 18-latest --depth 1 https://github.com/pganalyze/libpg_query /tmp/libpg_query
