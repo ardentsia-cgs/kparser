@@ -380,6 +380,31 @@ precedence-climbing expression parser. The Step 3 code lives in
 [`sqlparser.c`](sqlparser.c) (`ksqlparser.c` plus a sql layer and the mode
 switch); build it with `make sqlparser` and test it with `make test3`.
 
+## Optional: sql via libpg_query (Step 3b)
+
+[`SQL_PG.md`](SQL_PG.md) is a *branch* off Step 3, not a successor to it. Step 3
+hand-writes a SQL front-end; Step 3b asks what happens if you don't write the
+parser at all and instead hand the text to [`libpg_query`](https://github.com/pganalyze/libpg_query)
+— the *actual PostgreSQL parser*, extracted into a standalone C library — then
+**lower** its parse tree into the same `(verb; t; c; b; a)` AST. `SELECT * FROM
+t` still yields `` (`select;`t;();();()) ``; the difference is that Step 3
+*parsed* that tree while Step 3b *translated* it from Postgres's own. The two
+are mirror images: Step 3 owns the front-end (text → AST) and teaches scanning
+and precedence; Step 3b owns a back-end (PG tree → AST) and teaches lowering,
+with precedence and clause completeness arriving already solved. Because
+Postgres's `SelectStmt` fields line up almost slot-for-slot with the design
+[`SQL.md`](SQL.md) already documents, the payoff is a cross-check against ground
+truth: run the same SQL through the hand-rolled `sqlparser --sql` and through
+`pglower`, and the ASTs come out identical (38 of the 39 STEP 3 golden cases
+match; the one exception is a documented divergence — PostgreSQL case-folds
+unquoted identifiers, the teaching parser does not). This is the one place a
+heavy dependency is justified — its whole lesson is "use the real thing" — so it
+stays **opt-in and out of the default build**: the Step 3b code lives in
+[`pglower.c`](pglower.c) (reusing `sqlparser.c`'s K value core and `emit_query`
+verbatim, plus a lowering pass over libpg_query's protobuf output), built with
+`make pglower` and tested with `make test3b`, both of which skip cleanly when
+`libpg_query`/`protobuf-c` are absent so the default build and CI stay green.
+
 ## Next: q (Step 4)
 
 [`QPARSER.md`](QPARSER.md) turns to **q**, the query/analytics language
@@ -605,6 +630,7 @@ complexity rather than removing it.
 - <https://github.com/kparc/ksimple>
 - <https://ref.kparc.io/> (kparc/shakti K reference; documents select/update as `#[t;c;b[;a]]` / `_[t;c;b[;a]]`)
 - <http://nsl.com/k/ksql.k> (Stevan Apter's ksql.k)
+- <https://github.com/pganalyze/libpg_query> (PostgreSQL's parser as a standalone C library; see Step 3b)
 - <https://llvm.org/docs/tutorial/>
 - <https://norvig.com/lispy.html>
 

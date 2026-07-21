@@ -24,6 +24,19 @@ SRC4 := qparser.c
 BIN5 := uparser
 SRC5 := uparser.c
 
+# STEP 3b: the pglower build lowers libpg_query's (PostgreSQL's) parse tree into
+# the same AST. It is OPTIONAL and deliberately NOT in `all`: it needs external
+# libraries (libpg_query, protobuf-c) and a codegen step, which the rest of this
+# dependency-free project does not. See SQL_PG.md.
+BIN3B := pglower
+SRC3B := pglower.c
+PB_C  := pg_query.pb-c.c
+
+# Let `make LIBPG_QUERY_PREFIX=... PROTOBUF_C_PREFIX=... pglower` reach the
+# tests/pgenv.sh probe, which reads these from the environment.
+export LIBPG_QUERY_PREFIX
+export PROTOBUF_C_PREFIX
+
 all: $(BIN) $(BIN2) $(BIN3) $(BIN4) $(BIN5)
 
 $(BIN): $(SRC)
@@ -89,6 +102,34 @@ test3: $(BIN3)
 	tests/run.sh ./$(BIN3) tests/ksql_cases.tsv
 	tests/run.sh ./$(BIN3) tests/sql_cases.tsv --sql
 
+# STEP 3b: OPTIONAL build. tests/pgenv.sh locates libpg_query + protobuf-c and
+# protoc-c; if any is missing it prints why and this recipe SKIPS (exit 0) so a
+# machine without the optional dependency still succeeds. When present, it
+# regenerates the protobuf-c bindings from the shipped pg_query.proto and links
+# pglower against the real PostgreSQL parser.
+pglower: $(SRC3B)
+	@if env="$$(tests/pgenv.sh)"; then \
+	  eval "$$env"; \
+	  echo "protoc-c $$PG_PROTO"; \
+	  "$$PROTOC_C" --proto_path="$$(dirname "$$PG_PROTO")" --c_out=. "$$(basename "$$PG_PROTO")"; \
+	  echo "$(CC) ... -o $(BIN3B)"; \
+	  $(CC) $(CFLAGS) $$PG_INC -o $(BIN3B) $(SRC3B) $(PB_C) $$PG_LIB $(LDFLAGS); \
+	else \
+	  echo "SKIP: pglower (optional STEP 3b dependency missing; see message above and SQL_PG.md)"; \
+	fi
+
+# STEP 3b tests: the SAME sql_cases the hand-rolled sqlparser passes must lower
+# to the SAME AST from PostgreSQL's own parse tree -- two independent front-ends
+# converging on one AST, checked against ground truth. Skips if pglower could
+# not be built (optional dependency). tests/run_pg.sh knows which cases the two
+# surfaces legitimately disagree on (e.g. PG case-folds bare identifiers).
+test3b: pglower
+	@if [ -x ./$(BIN3B) ]; then \
+	  tests/run_pg.sh ./$(BIN3B); \
+	else \
+	  echo "SKIP: test3b (pglower not built; optional STEP 3b dependency missing)"; \
+	fi
+
 # STEP 4 tests: the q binary passes the q-specific cases. It does NOT pass
 # the STEP 1/2 suites unchanged, because q's named monadics change the AST
 # for glyph-in-monadic-position cases (the demotion is gone). The q cases
@@ -115,7 +156,8 @@ coverage: clean
 	@rm -f kparser.o
 
 clean:
-	rm -f $(BIN) $(BIN2) $(BIN3) $(BIN4) $(BIN5) kparser.o *.gcda *.gcno *.gcov
+	rm -f $(BIN) $(BIN2) $(BIN3) $(BIN4) $(BIN5) $(BIN3B) kparser.o *.gcda *.gcno *.gcov
+	rm -f pg_query.pb-c.c pg_query.pb-c.h
 	rm -rf *.dSYM
 
-.PHONY: all strict debug run run2 run3 run4 run5 test test2 test3 test4 test5 coverage clean
+.PHONY: all strict debug run run2 run3 run4 run5 test test2 test3 test3b test4 test5 coverage clean

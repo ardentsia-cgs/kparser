@@ -71,6 +71,25 @@ jobs:
             echo "ok (abort): $q"
           done
 
+  pglower:
+    name: pglower cross-check (Step 3b, optional)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install protobuf-c (compiler + runtime)
+        run: sudo apt-get update && sudo apt-get install -y protobuf-c-compiler libprotobuf-c-dev
+      - name: Build libpg_query from source (pinned to the 18 branch)
+        run: |
+          git clone -b 18-latest --depth 1 https://github.com/pganalyze/libpg_query /tmp/libpg_query
+          make -C /tmp/libpg_query
+          sudo make -C /tmp/libpg_query install
+          sudo ldconfig
+      - name: Cross-check pglower against sqlparser's golden ASTs
+        # pglower lowers PostgreSQL's own parse tree into the same AST the
+        # hand-rolled sqlparser produces; test3b asserts they agree. Skips
+        # cleanly if the optional dependency is missing (it isn't, here).
+        run: make LIBPG_QUERY_PREFIX=/usr/local test3b
+
   coverage:
     name: coverage
     runs-on: ubuntu-latest
