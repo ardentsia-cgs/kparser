@@ -83,6 +83,12 @@ t lj u	(lj;`t;`u)
 1 2 3 wavg 4 5 6	(wavg;1 2 3;4 5 6)
 select from t cross u where a=1	(`select;(cross;`t;`u);((=;`a;1));();())
 
+// ---- 2-char comparison operators: single dyadic tokens ----
+a>=1	(>=;`a;1)
+a<=b	(<=;`a;`b)
+a<>b	(<>;`a;`b)
+select from t where a>=1,b<>2	(`select;`t;((>=;`a;1);(<>;`b;2));();())
+
 // ---- adverbs work on both glyphs and named monadics ----
 +/	(`/;+)
 +/\	(`\;(`/;+))

@@ -285,6 +285,9 @@ static const char *DYADIC_NAMES[] = {
     "xbar",
     "asof",
     "cross",
+    ">=",   /* 2-char comparison operators: one token, KV2, q mode only */
+    "<=",
+    "<>",
 };
 #define NDYADICS (sizeof(DYADIC_NAMES) / sizeof(DYADIC_NAMES[0]))
 
@@ -570,6 +573,15 @@ static Tokens scan(const char *src, Mode mode) {
         else if (cl & CL_VERB) {
             int idx = verb_index(c);
             p++;
+            /* q's 2-char comparison operators. A single token, dyadic-only
+             * (no monadic form), so it joins the named-dyadic block like
+             * lj/bin: the AST node is KV2, the printer renders it by the
+             * 2-char spelling. Checked before ':' so a>=1 cannot misread
+             * as (>;=;1). q mode only: in K, a>=b is two verbs, > then =:
+             * (kdb+: parse"k)a>=b" -> (>;`a;(=:;`b))). */
+            if (mode == M_Q && c == '>' && src[p] == '=') { p++; EMIT(T_VERB, kverb(0, (int)NVERBS + (int)NDYADICS - 3)); noun_pos = 0; continue; }
+            if (mode == M_Q && c == '<' && src[p] == '=') { p++; EMIT(T_VERB, kverb(0, (int)NVERBS + (int)NDYADICS - 2)); noun_pos = 0; continue; }
+            if (mode == M_Q && c == '<' && src[p] == '>') { p++; EMIT(T_VERB, kverb(0, (int)NVERBS + (int)NDYADICS - 1)); noun_pos = 0; continue; }
             int monadic = (src[p] == ':');
             if (monadic) p++;
             EMIT(T_VERB, kverb(monadic, idx));
